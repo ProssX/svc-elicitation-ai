@@ -1,0 +1,36 @@
+{
+  "users": {
+    "user-123": {
+      "id": "user-123",
+      "name": "Juan Pérez",
+      "email": "juan.perez@prossx.com",
+      "role": "Gerente de Operaciones",
+      "organization": "ProssX Demo",
+      "organization_id": "0199a7e0-0b6c-7e23-ba4e-730599c09377",
+      "role_id": "0199a7e0-2f05-79ea-918a-771cf41067d5",
+      "technical_level": "non-technical"
+    },
+    "user-456": {
+      "id": "user-456",
+      "name": "María González",
+      "email": "maria.gonzalez@prossx.com",
+      "role": "Desarrolladora Backend",
+      "organization": "ProssX Demo",
+      "organization_id": "0199a7e0-0b6c-7e23-ba4e-730599c09377",
+      "role_id": "0199a7e0-2f05-79ea-918a-771cf41067d5",
+      "technical_level": "technical"
+    },
+    "user-789": {
+      "id": "user-789",
+      "name": "Carlos Ramírez",
+      "email": "carlos.ramirez@prossx.com",
+      "role": "Analista de Negocios",
+      "organization": "ProssX Demo",
+      "organization_id": "0199a7e0-0b6c-7e23-ba4e-730599c09377",
+      "role_id": "0199a7e0-2f05-79ea-918a-771cf41067d5",
+      "technical_level": "non-technical"
+    }
+  }
+}
+
+

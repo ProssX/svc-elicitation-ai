@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  elicitation-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: svc-elicitation-ai
+    ports:
+      - "8001:8001"
+    environment:
+      # Application
+      - APP_ENV=${APP_ENV:-development}
+      - APP_PORT=8001
+      - APP_HOST=0.0.0.0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # CORS
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
+      
+      # Backend PHP Service
+      - BACKEND_PHP_URL=${BACKEND_PHP_URL:-http://host.docker.internal:8000/api/v1}
+      
+      # Model Provider (local or openai)
+      - MODEL_PROVIDER=${MODEL_PROVIDER:-local}
+      
+      # OpenAI (only if MODEL_PROVIDER=openai)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      
+      # Ollama (only if MODEL_PROVIDER=local)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      
+      # Interview Configuration
+      - MIN_QUESTIONS=${MIN_QUESTIONS:-7}
+      - MAX_QUESTIONS=${MAX_QUESTIONS:-20}
+    
+    volumes:
+      # Mount data directory for mock users
+      - ./data:/app/data:ro
+    
+    networks:
+      - tesis-network
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  tesis-network:
+    external: true
+    name: tesis-network
+
+# Usage:
+# 1. For Ollama (local): 
+#    Ensure Ollama is running on host: ollama serve
+#    docker-compose up -d
+#
+# 2. For OpenAI:
+#    Set MODEL_PROVIDER=openai in .env
+#    Set OPENAI_API_KEY in .env
+#    docker-compose up -d
+#
+# 3. View logs:
+#    docker-compose logs -f elicitation-ai
+#
+# 4. Stop:
+#    docker-compose down
+

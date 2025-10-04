@@ -1,0 +1,27 @@
+# FastAPI and Server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-dotenv==1.0.1
+pydantic==2.10.6
+pydantic-settings==2.7.1
+
+# Strands Agents SDK
+strands-agents>=1.0.0
+
+# OpenAI (for GPT-4o support)
+openai>=1.0.0
+
+# HTTP Client
+httpx==0.28.1
+requests==2.32.3
+
+# Spell Checking (Spanish)
+pyspellchecker==0.8.2
+
+# CORS
+python-multipart==0.0.20
+
+# Logging and Monitoring
+python-json-logger==3.2.1
+
+
