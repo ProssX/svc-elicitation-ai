@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   elicitation-ai:
     build:
@@ -40,9 +38,6 @@ services:
       # Mount data directory for mock users
       - ./data:/app/data:ro
     
-    networks:
-      - tesis-network
-    
     restart: unless-stopped
     
     healthcheck:
@@ -52,10 +47,11 @@ services:
       retries: 3
       start_period: 40s
 
-networks:
-  tesis-network:
-    external: true
-    name: tesis-network
+# Networks configuration (optional)
+# Uncomment if you need to connect this service with other Docker services
+# networks:
+#   tesis-network:
+#     driver: bridge
 
 # Usage:
 # 1. For Ollama (local): 
