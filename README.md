@@ -62,12 +62,99 @@ Este microservicio utiliza **LLMs (Large Language Models)** para conducir entrev
 
 ---
 
-## 🚀 **Setup Rápido**
+## 🚀 **Inicio Rápido con Docker** (Recomendado)
+
+### **Prerrequisitos**
+- Docker Desktop instalado y corriendo
+- Git
+
+**✨ Ventaja de usar Docker:**
+- ✅ **NO necesitás instalar Ollama** en tu máquina
+- ✅ **NO necesitás instalar Python** ni dependencias
+- ✅ Todo corre aislado en contenedores
+- ✅ Fácil de compartir con el equipo
+
+### **Paso 1: Clonar el repositorio**
+```bash
+git clone <repo-url>
+cd svc-elicitation-ai
+```
+
+### **Paso 2: Levantar los servicios**
+```bash
+# Levantar backend AI + Ollama
+docker-compose up -d
+
+# Ver los logs en tiempo real
+docker-compose logs -f
+```
+
+### **Paso 3: Descargar el modelo de IA (solo primera vez)**
+```bash
+# Esto puede tardar ~2-3 minutos (descarga 2GB)
+docker exec ollama-service ollama pull llama3.2:3b
+```
+
+### **Paso 4: Verificar que todo funciona**
+```bash
+# Windows PowerShell:
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/health -Method Get
+
+# Linux/Mac/Git Bash:
+curl http://localhost:8001/api/v1/health
+```
+
+**Respuesta esperada:**
+```json
+{
+  "status": "success",
+  "code": 200,
+  "message": "Service is healthy",
+  "data": {
+    "service": "svc-elicitation-ai",
+    "version": "1.0.0",
+    "status": "healthy",
+    "model_provider": "local",
+    "model": "llama3.2:3b",
+    "environment": "development"
+  }
+}
+```
+
+### **Paso 5: Probar una entrevista**
+```bash
+# Windows PowerShell:
+$body = @{ language = 'es'; organization_id = '1'; role_id = '1' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Body $body -ContentType 'application/json'
+
+# Linux/Mac/Git Bash:
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es","organization_id":"1","role_id":"1"}'
+```
+
+**¡Listo! El servicio está corriendo en `http://localhost:8001` 🎉**
+
+---
+
+## 🛠️ **Setup Manual (Sin Docker)**
+
+<details>
+<summary>Click para expandir instrucciones de setup manual</summary>
+
+**⚠️ Con setup manual SÍ necesitás:**
+- Instalar Python, pip, y todas las dependencias manualmente
+- Instalar Ollama localmente (si usás modelo local)
+- Configurar variables de entorno
+
+**Recomendación:** Usá Docker si es tu primera vez.
+
+---
 
 ### **Prerrequisitos**
 - Python 3.11+
 - pip
-- **Opción A**: Ollama instalado (para modelo local)
+- **Opción A**: Ollama instalado localmente (para modelo local)
 - **Opción B**: API Key de OpenAI (para modelo cloud)
 
 ### **1. Clonar el repositorio**
@@ -119,11 +206,17 @@ curl http://localhost:8001/api/v1/health
 # Abrir en navegador: http://localhost:8001/docs
 ```
 
+</details>
+
 ---
 
 ## ⚙️ **Configuración**
 
 ### **Opción A: Modelo Local con Ollama** ⚡ (Recomendado para desarrollo)
+
+**📦 ¿Cuándo necesito esto?**
+- ✅ Si usás **Docker**: Ya está incluido, solo seguí los pasos del "Inicio Rápido"
+- ⚠️ Si usás **Setup Manual**: Seguí estos pasos para instalar Ollama localmente
 
 **Ventajas:**
 - ✅ Gratis, sin costos
@@ -131,10 +224,12 @@ curl http://localhost:8001/api/v1/health
 - ✅ Sin límites de requests
 
 **Desventajas:**
-- ❌ Requiere GPU para buen rendimiento
+- ❌ Requiere GPU para buen rendimiento (CPU es muy lento)
 - ❌ Calidad menor que GPT-4o
 
-#### **Paso 1: Instalar Ollama**
+---
+
+#### **Paso 1: Instalar Ollama (Solo si NO usás Docker)**
 ```bash
 # Windows/Mac/Linux
 # Descargar de: https://ollama.com/download
@@ -206,58 +301,93 @@ uvicorn app.main:app --reload --port 8001
 
 ---
 
-## 🐳 **Docker**
+## 🐳 **Gestión con Docker**
 
-### **Opción 1: docker-compose (Recomendado)**
+### **Comandos Útiles**
 
-#### **Con Ollama (Local)**
+#### **Iniciar servicios**
 ```bash
-# 1. Asegurarse de que Ollama esté corriendo en host
-ollama serve
-
-# 2. Configurar .env
-MODEL_PROVIDER=local
-
-# 3. Levantar servicio
+# Iniciar en background
 docker-compose up -d
 
-# 4. Ver logs
-docker-compose logs -f elicitation-ai
+# Iniciar y ver logs
+docker-compose up
+
+# Rebuild completo (si cambiaste código)
+docker-compose up -d --build
 ```
 
-#### **Con OpenAI (Cloud)**
+#### **Ver logs**
 ```bash
-# 1. Configurar .env
-MODEL_PROVIDER=openai
-OPENAI_API_KEY=sk-proj-XXXXXXXX
+# Ambos servicios
+docker-compose logs -f
 
-# 2. Levantar servicio
-docker-compose up -d
-
-# 3. Ver logs
+# Solo AI service
 docker-compose logs -f elicitation-ai
+
+# Solo Ollama
+docker-compose logs -f ollama
 ```
 
-### **Opción 2: Docker standalone**
+#### **Detener servicios**
 ```bash
-# Build
-docker build -t svc-elicitation-ai:latest .
+# Detener (mantiene los datos del modelo)
+docker-compose down
 
-# Run con Ollama
-docker run -d \
-  -p 8001:8001 \
-  -e MODEL_PROVIDER=local \
-  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-  --name elicitation-ai \
-  svc-elicitation-ai:latest
+# Detener y borrar TODO (incluyendo modelo descargado - 2GB)
+docker-compose down -v
+```
 
-# Run con OpenAI
-docker run -d \
-  -p 8001:8001 \
-  -e MODEL_PROVIDER=openai \
-  -e OPENAI_API_KEY=sk-proj-XXXXXXXX \
-  --name elicitation-ai \
-  svc-elicitation-ai:latest
+#### **Verificar estado**
+```bash
+# Ver contenedores corriendo
+docker ps
+
+# Ver salud de los servicios
+docker inspect svc-elicitation-ai | grep -A 3 "Health"
+docker inspect ollama-service | grep -A 3 "Health"
+```
+
+#### **Reiniciar un servicio**
+```bash
+# Reiniciar solo AI service
+docker-compose restart elicitation-ai
+
+# Reiniciar solo Ollama
+docker-compose restart ollama
+```
+
+#### **Ejecutar comandos dentro de los contenedores**
+```bash
+# Ver modelos instalados en Ollama
+docker exec ollama-service ollama list
+
+# Descargar otro modelo
+docker exec ollama-service ollama pull llama3.1:8b
+
+# Verificar configuración del AI service
+docker exec svc-elicitation-ai python -c "from app.config import Settings; s = Settings(); print(f'Provider: {s.model_provider}, Model: {s.ollama_model}')"
+```
+
+---
+
+### **🔄 Cambiar de Ollama a OpenAI**
+
+Si querés cambiar al modelo cloud de OpenAI:
+
+```bash
+# 1. Detener servicios
+docker-compose down
+
+# 2. Editar docker-compose.yml, cambiar estas líneas:
+# - MODEL_PROVIDER=openai  # Cambiar de 'local' a 'openai'
+# - OPENAI_API_KEY=sk-proj-TU_API_KEY_AQUI
+
+# 3. Levantar solo el AI service (no necesitamos Ollama)
+docker-compose up -d elicitation-ai
+
+# 4. Verificar
+curl http://localhost:8001/api/v1/health
 ```
 
 ---
@@ -341,46 +471,171 @@ Content-Type: application/json
 
 ## 🔍 **Troubleshooting**
 
-### **Problema: "Module 'openai' not found"**
+### **❌ Error: "All connection attempts failed"**
+
+**Síntoma:** El AI service no puede conectarse a Ollama
+
+**Causas y Soluciones:**
+
+1. **Ollama no está corriendo:**
 ```bash
-# Solución: Instalar openai
+# Verificar si Ollama está up
+docker ps | grep ollama
+
+# Si no aparece, reiniciar servicios
+docker-compose restart
+```
+
+2. **Modelo no descargado:**
+```bash
+# Verificar modelos instalados
+docker exec ollama-service ollama list
+
+# Si está vacío, descargar el modelo
+docker exec ollama-service ollama pull llama3.2:3b
+```
+
+3. **Variable de entorno incorrecta:**
+```bash
+# Verificar la URL dentro del contenedor
+docker exec svc-elicitation-ai printenv | grep OLLAMA
+
+# Debe mostrar: OLLAMA_BASE_URL=http://ollama:11434
+# Si muestra localhost:11434, hay que editar docker-compose.yml
+```
+
+---
+
+### **❌ Error: "422 Unprocessable Entity" en `/start`**
+
+**Síntoma:** Error de validación al iniciar entrevista
+
+**Causa:** Los IDs deben ser strings, no números
+
+**Solución:**
+```bash
+# ❌ Incorrecto:
+{"organization_id": 1, "role_id": 1}
+
+# ✅ Correcto:
+{"organization_id": "1", "role_id": "1"}
+```
+
+---
+
+### **❌ Error: "Module 'openai' not found"**
+
+**Síntoma:** ImportError al iniciar el servicio
+
+**Solución:**
+```bash
+# Con Docker (rebuild)
+docker-compose up -d --build
+
+# Sin Docker
 pip install openai>=1.0.0
 ```
 
-### **Problema: "OpenAI API key not set"**
-```bash
-# Solución 1: Verificar .env
-cat .env | grep OPENAI_API_KEY
+---
 
-# Solución 2: Exportar manualmente
+### **❌ Error: "OpenAI API key not set"**
+
+**Síntoma:** AuthenticationError al usar OpenAI
+
+**Soluciones:**
+
+1. **Con Docker:**
+```bash
+# Editar docker-compose.yml, línea ~42:
+- OPENAI_API_KEY=sk-proj-TU_KEY_AQUI
+
+# Recrear contenedor
+docker-compose up -d --force-recreate elicitation-ai
+```
+
+2. **Sin Docker (Windows PowerShell):**
+```powershell
+$env:OPENAI_API_KEY="sk-proj-XXXXX"
+uvicorn app.main:app --reload --port 8001
+```
+
+3. **Sin Docker (Linux/Mac):**
+```bash
 export OPENAI_API_KEY="sk-proj-XXXXX"
+uvicorn app.main:app --reload --port 8001
 ```
 
-### **Problema: "Cannot connect to Ollama"**
+---
+
+### **⚠️ Problema: Respuestas MUY lentas con Ollama**
+
+**Causa:** Modelo muy grande para tu CPU (sin GPU)
+
+**Soluciones:**
+
+1. **Usar modelo más pequeño:**
 ```bash
-# Solución 1: Verificar que Ollama esté corriendo
-curl http://localhost:11434/api/tags
+# Cambiar a modelo 3B (más rápido, menor calidad)
+docker exec ollama-service ollama pull llama3.2:3b
 
-# Solución 2: Iniciar Ollama
-ollama serve
-
-# Solución 3: Verificar modelo descargado
-ollama list
+# Editar docker-compose.yml:
+# - OLLAMA_MODEL=llama3.2:3b
 ```
 
-### **Problema: Respuestas lentas con Ollama**
+2. **Cambiar a OpenAI (más rápido pero de pago):**
 ```bash
-# Causa: Modelo muy grande para tu hardware
-# Solución: Usar modelo más pequeño
-ollama pull llama3.2:3b  # En vez de 8b o 70b
+# Ver sección "Cambiar de Ollama a OpenAI"
 ```
 
-### **Problema: "Interview completed" pero sigue preguntando**
+---
+
+### **⚠️ Problema: "Interview completed" pero sigue preguntando**
+
+**Causa:** Bug en lógica de terminación (resuelto en v1.0.0)
+
+**Solución:**
 ```bash
-# Causa: Bug conocido (ya resuelto en última versión)
-# Solución: Hacer git pull para obtener el fix
+# Actualizar código
 git pull origin main
+
+# Rebuild servicios
+docker-compose up -d --build
 ```
+
+---
+
+### **⚠️ Problema: Contenedor "unhealthy"**
+
+**Síntoma:** `docker ps` muestra status "unhealthy"
+
+**Solución:**
+```bash
+# Ver logs del contenedor
+docker logs svc-elicitation-ai --tail 50
+
+# Causas comunes:
+# 1. Puerto 8001 ya en uso -> cambiar en docker-compose.yml
+# 2. Ollama no disponible -> verificar ollama-service
+# 3. Dependencias faltantes -> docker-compose up -d --build
+```
+
+---
+
+### **⚠️ Problema: PC lenta / Docker consume mucha RAM**
+
+**Causa:** Ollama + modelo cargado en memoria (~4-6GB RAM)
+
+**Soluciones:**
+
+1. **Detener Ollama cuando no lo uses:**
+```bash
+docker-compose stop ollama
+```
+
+2. **Usar OpenAI en lugar de Ollama local**
+
+3. **Aumentar RAM de Docker Desktop:**
+   - Docker Desktop → Settings → Resources → Memory → Aumentar a 6GB+
 
 ---
 
@@ -428,10 +683,15 @@ svc-elicitation-ai/
 | **`MODEL_PROVIDER`** | **Proveedor: `local` o `openai`** | `local` | **Sí** |
 | `OPENAI_API_KEY` | API Key de OpenAI | - | Solo si `openai` |
 | `OPENAI_MODEL` | Modelo de OpenAI | `gpt-4o` | No |
-| `OLLAMA_BASE_URL` | URL de Ollama | `http://localhost:11434` | Solo si `local` |
+| `OLLAMA_BASE_URL` | URL de Ollama | `http://ollama:11434` (Docker)<br>`http://localhost:11434` (Local) | Solo si `local` |
 | `OLLAMA_MODEL` | Modelo de Ollama | `llama3.2:3b` | No |
 | `MIN_QUESTIONS` | Mínimo de preguntas | `7` | No |
 | `MAX_QUESTIONS` | Máximo de preguntas | `20` | No |
+
+**⚠️ Nota importante sobre `OLLAMA_BASE_URL`:**
+- En Docker: usar `http://ollama:11434` (nombre del servicio)
+- Sin Docker: usar `http://localhost:11434` (localhost)
+- Si ves error "All connection attempts failed", verificá esta variable
 
 ---
 
@@ -514,6 +774,117 @@ Si encontrás algún problema:
 2. Revisá los logs: `docker-compose logs -f elicitation-ai`
 3. Consultá la documentación interactiva: http://localhost:8001/docs
 4. Revisá las issues en el repositorio
+
+---
+
+## ❓ **Preguntas Frecuentes (FAQ)**
+
+### **1. ¿Necesito instalar Ollama en mi máquina?**
+
+**Con Docker (recomendado):** ❌ NO
+- Ollama corre dentro de un contenedor Docker
+- El modelo se descarga dentro del contenedor
+- Todo está aislado, no "ensucia" tu máquina
+
+**Sin Docker (setup manual):** ✅ SÍ
+- Necesitás instalar Ollama desde https://ollama.com/download
+- El modelo se descarga en tu máquina (~2GB)
+
+---
+
+### **2. ¿Necesito instalar Python?**
+
+**Con Docker:** ❌ NO
+- Python y todas las dependencias están en el contenedor
+
+**Sin Docker:** ✅ SÍ
+- Python 3.11+
+- pip
+- requirements.txt
+
+---
+
+### **3. ¿Cuánto espacio ocupa todo?**
+
+**Docker:**
+- Imagen de Python: ~500 MB
+- Imagen de Ollama: ~500 MB
+- Modelo Llama 3.2 3B: ~2 GB
+- **Total: ~3 GB**
+
+---
+
+### **4. ¿Puedo usar esto sin internet?**
+
+**Con Ollama (local):** ✅ SÍ
+- Una vez descargado el modelo, funciona 100% offline
+
+**Con OpenAI:** ❌ NO
+- Necesita conexión a internet siempre
+
+---
+
+### **5. ¿Es gratis?**
+
+**Ollama:** ✅ 100% gratis, sin límites
+
+**OpenAI:** ❌ ~$0.01 por entrevista (requiere API key de pago)
+
+---
+
+### **6. ¿Qué pasa si apago la PC?**
+
+- Los contenedores se detienen
+- Al hacer `docker-compose up -d` de nuevo, todo vuelve como estaba
+- **El modelo NO se borra**, queda guardado en un volumen de Docker
+
+---
+
+### **7. ¿Cómo borro todo?**
+
+```bash
+# Borrar contenedores y el modelo descargado
+docker-compose down -v
+
+# Borrar también las imágenes (libera ~3GB)
+docker rmi svc-elicitation-ai-elicitation-ai ollama/ollama
+```
+
+---
+
+## 📝 **Comandos más usados (Cheat Sheet)**
+
+```bash
+# 🚀 INICIO RÁPIDO
+docker-compose up -d                                    # Levantar servicios
+docker exec ollama-service ollama pull llama3.2:3b     # Descargar modelo (solo 1ra vez)
+curl http://localhost:8001/api/v1/health               # Verificar que funciona
+
+# 📊 MONITOREO
+docker ps                                               # Ver contenedores corriendo
+docker-compose logs -f                                  # Ver logs en vivo
+docker stats                                            # Ver uso de recursos (RAM/CPU)
+
+# 🔄 GESTIÓN
+docker-compose restart elicitation-ai                   # Reiniciar AI service
+docker-compose down                                     # Detener todo
+docker-compose up -d --build                            # Rebuild y reiniciar
+
+# 🔍 DEBUG
+docker exec ollama-service ollama list                  # Ver modelos instalados
+docker exec svc-elicitation-ai printenv | grep MODEL   # Ver config del modelo
+docker logs svc-elicitation-ai --tail 50               # Ver últimos 50 logs
+
+# 🧪 TESTING
+# PowerShell:
+Invoke-RestMethod http://localhost:8001/api/v1/health
+$body = @{ language = 'es'; organization_id = '1'; role_id = '1' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Body $body -ContentType 'application/json'
+
+# Linux/Mac/Git Bash:
+curl http://localhost:8001/api/v1/health
+curl -X POST http://localhost:8001/api/v1/interviews/start -H "Content-Type: application/json" -d '{"language":"es","organization_id":"1","role_id":"1"}'
+```
 
 ---
 

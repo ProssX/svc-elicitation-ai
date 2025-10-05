@@ -1,4 +1,20 @@
 services:
+  # Ollama service (Local LLM)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   elicitation-ai:
     build:
       context: .
@@ -27,8 +43,9 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
       
       # Ollama (only if MODEL_PROVIDER=local)
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      # Use the service name as hostname
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:3b
       
       # Interview Configuration
       - MIN_QUESTIONS=${MIN_QUESTIONS:-7}
@@ -37,6 +54,10 @@ services:
     volumes:
       # Mount data directory for mock users
       - ./data:/app/data:ro
+    
+    depends_on:
+      ollama:
+        condition: service_healthy
     
     restart: unless-stopped
     
@@ -47,6 +68,11 @@ services:
       retries: 3
       start_period: 40s
 
+# Volumes for persistent data
+volumes:
+  ollama-data:
+    driver: local
+
 # Networks configuration (optional)
 # Uncomment if you need to connect this service with other Docker services
 # networks:
@@ -54,18 +80,18 @@ services:
 #     driver: bridge
 
 # Usage:
-# 1. For Ollama (local): 
-#    Ensure Ollama is running on host: ollama serve
+# 1. Start services:
 #    docker-compose up -d
 #
-# 2. For OpenAI:
-#    Set MODEL_PROVIDER=openai in .env
-#    Set OPENAI_API_KEY in .env
-#    docker-compose up -d
+# 2. Pull Ollama model (first time only):
+#    docker exec -it ollama-service ollama pull llama3.2:3b
 #
 # 3. View logs:
 #    docker-compose logs -f elicitation-ai
+#    docker-compose logs -f ollama
 #
-# 4. Stop:
+# 4. Stop services:
 #    docker-compose down
-
+#
+# 5. Stop and remove volumes (WARNING: deletes Ollama models):
+#    docker-compose down -v
