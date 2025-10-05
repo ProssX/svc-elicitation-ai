@@ -135,6 +135,8 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
 
 **¡Listo! El servicio está corriendo en `http://localhost:8001` 🎉**
 
+**📚 Ver documentación interactiva:** http://localhost:8001/docs
+
 ---
 
 ## 🛠️ **Setup Manual (Sin Docker)**
@@ -394,78 +396,224 @@ curl http://localhost:8001/api/v1/health
 
 ## 📡 **API Endpoints**
 
-### **1. Health Check**
+### **📚 Documentación Interactiva**
+
+FastAPI genera documentación automática en dos formatos:
+
+#### **Swagger UI (Recomendado)**
+```
+🌐 http://localhost:8001/docs
+```
+- ✅ Interfaz interactiva para probar endpoints
+- ✅ Esquemas de request/response
+- ✅ Ejecutar requests directamente desde el navegador
+- ✅ Ver ejemplos y validaciones
+
+#### **ReDoc (Alternativo)**
+```
+🌐 http://localhost:8001/redoc
+```
+- ✅ Documentación limpia y moderna
+- ✅ Búsqueda avanzada
+- ✅ Descarga de especificación OpenAPI
+
+#### **OpenAPI JSON**
+```
+🌐 http://localhost:8001/openapi.json
+```
+- Para integración con herramientas externas (Postman, Insomnia, etc.)
+
+---
+
+### **🔌 Endpoints Disponibles**
+
+#### **1. Health Check**
 ```bash
 GET /api/v1/health
 
 # Respuesta:
 {
-  "status": "healthy",
-  "model_provider": "openai",
-  "model_id": "gpt-4o"
+  "status": "success",
+  "code": 200,
+  "message": "Service is healthy",
+  "data": {
+    "service": "svc-elicitation-ai",
+    "version": "1.0.0",
+    "status": "healthy",
+    "model_provider": "local",
+    "model": "llama3.2:3b",
+    "environment": "development"
+  }
 }
 ```
 
-### **2. Iniciar Entrevista**
-```bash
+#### **2. Iniciar Entrevista**
+**Descripción:** Inicia una nueva sesión de entrevista con el usuario.
+
+**Request:**
+```json
 POST /api/v1/interviews/start
 Content-Type: application/json
 
 {
-  "user_id": "user-123",
-  "organization_id": "org-456",
-  "role_id": 1,
+  "language": "es",              // "es" | "en" | "pt"
+  "organization_id": "1",         // String (ID de organización)
+  "role_id": "1"                  // String (ID del rol del usuario)
+}
+```
+
+**Ejemplo con PowerShell:**
+```powershell
+$body = @{ 
+  language = 'es'
+  organization_id = '1'
+  role_id = '1' 
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Body $body -ContentType 'application/json'
+```
+
+**Ejemplo con cURL:**
+```bash
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es","organization_id":"1","role_id":"1"}'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "code": 200,
+  "message": "Interview started successfully",
+  "data": {
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "question": "Hola Juan, ¿cómo vas? Me alegra tenerte aquí hoy...",
+    "question_number": 1,
+    "is_final": false,
+    "context": {}
+  },
+  "errors": [],
+  "meta": {
+    "user_name": "Juan Pérez",
+    "organization": "ProssX Demo"
+  }
+}
+```
+
+#### **3. Continuar Entrevista**
+**Descripción:** Envía la respuesta del usuario y recibe la siguiente pregunta.
+
+**Request:**
+```json
+POST /api/v1/interviews/continue
+Content-Type: application/json
+
+{
+  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+  "user_response": "Soy gerente de operaciones, coordino equipos...",
+  "conversation_history": [],
   "language": "es"
 }
+```
 
-# Respuesta:
+**Ejemplo con PowerShell:**
+```powershell
+$body = @{ 
+  session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
+  user_response = 'Soy gerente de operaciones, coordino equipos y apruebo compras'
+  conversation_history = @()
+  language = 'es'
+} | ConvertTo-Json -Depth 3
+
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/continue `
+  -Method Post -Body $body -ContentType 'application/json'
+```
+
+**Ejemplo con cURL:**
+```bash
+curl -X POST http://localhost:8001/api/v1/interviews/continue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "user_response": "Soy gerente de operaciones, coordino equipos",
+    "conversation_history": [],
+    "language": "es"
+  }'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "code": 200,
+  "message": "Question generated successfully",
+  "data": {
+    "question": "Vamos a profundizar un poco más. ¿Cuál es el primer paso...",
+    "question_number": 2,
+    "is_final": false,
+    "context": {},
+    "corrected_response": "..."
+  },
+  "errors": [],
+  "meta": {
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "question_count": 2
+  }
+}
+```
+
+---
+
+#### **4. Exportar Entrevista**
+**Descripción:** Exporta los datos completos de la entrevista para análisis posterior.
+
+**Request:**
+```json
+POST /api/v1/interviews/export
+Content-Type: application/json
+
+{
+  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43"
+}
+```
+
+**Ejemplo con PowerShell:**
+```powershell
+$body = @{ session_id = '1add3c4a-8730-4140-888b-59ac47fcac43' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/export `
+  -Method Post -Body $body -ContentType 'application/json'
+```
+
+**Ejemplo con cURL:**
+```bash
+curl -X POST http://localhost:8001/api/v1/interviews/export \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"1add3c4a-8730-4140-888b-59ac47fcac43"}'
+```
+
+**Response:**
+```json
 {
   "status": "success",
   "data": {
     "session_id": "uuid",
-    "question": "Hola Juan! ¿Cómo andás? Soy el Agente ProssX...",
-    "question_number": 1,
-    "is_final": false,
-    "context": {
-      "processes_identified": [],
-      "topics_discussed": [],
-      "completeness": 0.0
+    "conversation": [
+      {"role": "assistant", "content": "..."},
+      {"role": "user", "content": "..."}
+    ],
+    "metadata": {
+      "user_name": "Juan Pérez",
+      "organization": "ProssX Demo",
+      "start_time": "2025-10-05T10:30:00Z",
+      "duration_minutes": 15
     }
   }
 }
 ```
 
-### **3. Continuar Entrevista**
-```bash
-POST /api/v1/interviews/continue
-Content-Type: application/json
-
-{
-  "session_id": "uuid",
-  "user_response": "Soy analista de compras...",
-  "conversation_history": [
-    {"role": "assistant", "content": "..."},
-    {"role": "user", "content": "..."}
-  ],
-  "language": "es"
-}
-```
-
-### **4. Exportar Entrevista**
-```bash
-POST /api/v1/interviews/export
-Content-Type: application/json
-
-{
-  "session_id": "uuid"
-}
-
-# Retorna:
-# - Conversación completa
-# - Metadata del usuario
-# - Métricas (duración, completeness, etc.)
-# - NO incluye análisis de procesos (eso es responsabilidad de otro servicio)
-```
+**⚠️ Nota:** Este endpoint retorna **solo los datos en crudo**. El análisis de procesos (extracción, estructuración, BPMN) es responsabilidad de otro microservicio que consumirá estos datos.
 
 ---
 
