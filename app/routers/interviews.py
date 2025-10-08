@@ -23,24 +23,61 @@ async def test_interview(request: StartInterviewRequest):
             "session_id": "test-session-123",
             "question": f"Hola! Soy el Agente ProssX. Test mode activo. Usuario: {request.user_id}, Org: {request.organization_id}, Role: {request.role_id}, Language: {request.language}",
             "question_number": 1,
-            "is_final": False,
-            "context": {
-                "processes_identified": [],
-                "topics_discussed": [],
-                "completeness": 0.0
-            }
+            "is_final": False
         },
         message="Test interview started successfully",
-        meta={"test_mode": True}
+        meta={
+            "test_mode": True,
+            "language": request.language
+        }
     )
 
 
-@router.post("/start")
+@router.post("/start", response_model=None)
 async def start_interview(request: StartInterviewRequest):
     """
     Start a new interview session
     
-    Creates a new interview session and returns the first question
+    Creates a new interview session and returns the first question.
+    
+    **Request Structure:**
+    ```json
+    {
+      "user_id": "optional-user-id",
+      "organization_id": "1",
+      "role_id": "1",
+      "language": "es"  // Optional: es|en|pt (default: "es")
+    }
+    ```
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Interview started successfully",
+      "data": {
+        "session_id": "uuid-string",
+        "question": "Agent's first question in selected language",
+        "question_number": 1,
+        "is_final": false
+      },
+      "errors": null,
+      "meta": {
+        "user_name": "User's name",
+        "organization": "Organization name",
+        "language": "es"  // ⚠️ IMPORTANT: Persist this for /continue requests
+      }
+    }
+    ```
+    
+    **⚠️ IMPORTANT for Frontend:**
+    - Save `meta.language` from response to localStorage
+    - Send it in EVERY `/continue` request
+    - Backend is stateless (doesn't remember language between requests)
+    
+    **Note:** The `context` field (processes_identified, completeness, etc.) 
+    has been removed as it's only used internally by the agent.
     """
     try:
         # Get context service
@@ -64,17 +101,12 @@ async def start_interview(request: StartInterviewRequest):
         # Generate session ID
         session_id = str(uuid.uuid4())
         
-        # Prepare response data
+        # Prepare response data (simplified, no internal context exposed)
         data = {
             "session_id": session_id,
             "question": interview_response.question,
             "question_number": interview_response.question_number,
-            "is_final": interview_response.is_final,
-            "context": {
-                "processes_identified": interview_response.context.processes_identified,
-                "topics_discussed": interview_response.context.topics_discussed,
-                "completeness": interview_response.context.completeness
-            }
+            "is_final": interview_response.is_final
         }
         
         return success_response(
@@ -82,7 +114,8 @@ async def start_interview(request: StartInterviewRequest):
             message="Interview started successfully",
             meta={
                 "user_name": user_context.get("name"),
-                "organization": user_context.get("organization")
+                "organization": user_context.get("organization"),
+                "language": request.language  # Include language for persistence
             }
         )
         
@@ -98,12 +131,53 @@ async def start_interview(request: StartInterviewRequest):
         )
 
 
-@router.post("/continue")
+@router.post("/continue", response_model=None)
 async def continue_interview(request: ContinueInterviewRequest):
     """
     Continue an ongoing interview
     
-    Receives user's response and returns the next question
+    Receives user's response and returns the next question.
+    
+    **⚠️ IMPORTANT:** The `language` parameter is REQUIRED in each request 
+    because the backend is stateless (doesn't store session data). 
+    It must be sent to ensure the agent responds in the correct language.
+    
+    **Request Structure:**
+    ```json
+    {
+      "session_id": "uuid-string",
+      "user_response": "User's answer to previous question",
+      "conversation_history": [...],
+      "language": "es"  // ⚠️ REQUIRED: es|en|pt
+    }
+    ```
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Question generated successfully",
+      "data": {
+        "question": "Agent's next question",
+        "question_number": 2,
+        "is_final": false,
+        "corrected_response": "User's response (spell-checked)"
+      },
+      "errors": null,
+      "meta": {
+        "session_id": "uuid-string",
+        "question_count": 2,
+        "language": "es"  // Same as request
+      }
+    }
+    ```
+    
+    **Why `language` in every request?**
+    - Backend is stateless (no session storage)
+    - Ensures agent uses correct language for system prompt
+    - Maintains conversation consistency
+    - If omitted, defaults to "es" (may break multi-language conversations)
     """
     try:
         # Get context service
@@ -126,16 +200,11 @@ async def continue_interview(request: ContinueInterviewRequest):
             language=request.language
         )
         
-        # Prepare response data
+        # Prepare response data (simplified, no internal context exposed)
         data = {
             "question": interview_response.question,
             "question_number": interview_response.question_number,
             "is_final": interview_response.is_final,
-            "context": {
-                "processes_identified": interview_response.context.processes_identified,
-                "topics_discussed": interview_response.context.topics_discussed,
-                "completeness": interview_response.context.completeness
-            },
             "corrected_response": interview_response.corrected_user_response
         }
         
@@ -144,7 +213,8 @@ async def continue_interview(request: ContinueInterviewRequest):
             message="Question generated successfully",
             meta={
                 "session_id": request.session_id,
-                "question_count": interview_response.question_number
+                "question_count": interview_response.question_number,
+                "language": request.language  # Include language for persistence
             }
         )
         
@@ -156,13 +226,22 @@ async def continue_interview(request: ContinueInterviewRequest):
         )
 
 
-@router.post("/export")
+@router.post("/export", response_model=None)
 async def export_interview(request: ExportInterviewRequest):
     """
     Export raw interview data (NO AI analysis)
     
-    **Design Principle**: This endpoint ONLY exports the raw conversation and metadata.
+    **Design Principle**: This endpoint ONLY exports the raw conversation data.
     It does NOT perform any AI analysis or process extraction.
+    
+    **Request Structure:**
+    ```json
+    {
+      "session_id": "uuid-string",
+      "conversation_history": [...],  // Complete conversation from localStorage
+      "language": "es"  // Interview language
+    }
+    ```
     
     **Separation of Concerns**:
     - This service: Conducts interviews + Exports raw data
@@ -170,29 +249,40 @@ async def export_interview(request: ExportInterviewRequest):
     
     **What this returns**:
     - ✅ Full conversation history (questions + answers)
-    - ✅ User metadata (name, role, organization)
-    - ✅ Interview metrics (duration, completeness, total questions)
+    - ✅ User info (name, role, organization)
+    - ✅ Interview metrics (total questions, duration)
     - ✅ Timestamps and session info
-    - ❌ NO process extraction (that's for another service)
+    - ❌ NO completeness_score (internal metric, removed)
+    - ❌ NO process extraction (done by another service)
     
-    **Use case**: 
-    - Frontend calls this when interview is complete (is_final=true)
-    - Backend PHP persists raw data to PostgreSQL
-    - Another microservice/batch process analyzes it later
-    
-    **Example Response**:
+    **Response Structure:**
     ```json
     {
       "status": "success",
+      "code": 200,
+      "message": "Interview data exported successfully",
       "data": {
         "session_id": "uuid",
         "user_name": "Juan Pérez",
         "conversation_history": [...],
-        "completeness_score": 0.85,
-        "total_questions": 8
+        "total_questions": 8,
+        "total_user_responses": 8,
+        "is_complete": true
+      },
+      "errors": null,
+      "meta": {
+        "session_id": "uuid",
+        "export_date": "2025-10-08T...",
+        "language": "es",  // ⚠️ Language in meta (consistent with other endpoints)
+        "technical_level": "non-technical"
       }
     }
     ```
+    
+    **Use case**: 
+    - Frontend calls this when interview is complete (is_final=true)
+    - Backend PHP persists raw data to PostgreSQL
+    - Another microservice analyzes it later for BPMN generation
     """
     try:
         # Get context service
@@ -201,12 +291,20 @@ async def export_interview(request: ExportInterviewRequest):
         # Get user context (mock for MVP)
         user_context = await context_service.get_user_context("user-123")
         
-        # For now, we need conversation_history from localStorage (frontend should send it)
-        # In production, you might store sessions temporarily or retrieve from frontend
-        # For this endpoint, we'll return what we have in the request
+        # Calculate metrics from conversation_history
+        total_questions = len([m for m in request.conversation_history if m.role == "assistant"])
+        total_user_responses = len([m for m in request.conversation_history if m.role == "user"])
         
-        # This is a SIMPLIFIED version - in production you'd retrieve the full session
-        # For now, we'll create a basic export structure
+        # Calculate duration if timestamps available
+        interview_duration_minutes = None
+        if request.conversation_history and len(request.conversation_history) >= 2:
+            first_msg = request.conversation_history[0]
+            last_msg = request.conversation_history[-1]
+            if first_msg.timestamp and last_msg.timestamp:
+                duration = (last_msg.timestamp - first_msg.timestamp).total_seconds() / 60
+                interview_duration_minutes = int(duration)
+        
+        # Create export data
         export_data = InterviewExportData(
             session_id=request.session_id,
             user_id="user-123",  # From auth in production
@@ -214,16 +312,11 @@ async def export_interview(request: ExportInterviewRequest):
             user_role=user_context.get("role", "Empleado"),
             organization=user_context.get("organization", "Organización"),
             interview_date=datetime.now(),
-            interview_duration_minutes=None,  # Would calculate from timestamps
-            total_questions=0,  # Would get from conversation_history
-            total_user_responses=0,  # Would get from conversation_history
-            completeness_score=0.0,  # Would get from last context
+            interview_duration_minutes=interview_duration_minutes,
+            total_questions=total_questions,
+            total_user_responses=total_user_responses,
             is_complete=True,  # Assume complete if exporting
-            conversation_history=[],  # Would get from localStorage or session store
-            metadata={
-                "technical_level": user_context.get("technical_level", "unknown"),
-                "language": "es"  # Default, would come from request
-            }
+            conversation_history=request.conversation_history
         )
         
         return success_response(
@@ -232,6 +325,8 @@ async def export_interview(request: ExportInterviewRequest):
             meta={
                 "session_id": request.session_id,
                 "export_date": datetime.now().isoformat(),
+                "language": request.language,  # ✅ Language in meta (consistent)
+                "technical_level": user_context.get("technical_level", "unknown"),
                 "note": "This is raw data. Process extraction should be done by a separate service."
             }
         )
