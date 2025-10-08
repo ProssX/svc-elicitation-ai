@@ -198,10 +198,12 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
         context = self._analyze_conversation_context(conversation, user_response)
         
         # Determine if this should be the final question
+        # Pass agent's question to detect closing signals
         is_final = self._should_finish_interview(
             question_number=question_number,
             context=context,
-            user_response=user_response
+            user_response=user_response,
+            agent_question=question
         )
         
         # If we detected it should finish, override the question with a closing message
@@ -274,58 +276,68 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
         self,
         question_number: int,
         context: InterviewContext,
-        user_response: str
+        user_response: str,
+        agent_question: str
     ) -> bool:
         """
         Determine if the interview should end
         
-        **Criterios mejorados**:
-        - Nunca antes de 7 preguntas (min_questions)
-        - Solo si tenemos DETALLES suficientes (no solo keywords)
-        - O si llegamos al máximo (20)
-        - O si el usuario pide terminar explícitamente
+        **Nueva estrategia - Delegar más al LLM**:
+        
+        La decisión de cuándo terminar está principalmente en el SYSTEM PROMPT del agente.
+        Esta función solo verifica límites absolutos y señales explícitas.
+        
+        El agente (LLM) sabe cuándo terminar por el prompt:
+        - Cuando tiene información detallada de 2+ procesos
+        - Cuando el usuario pide terminar
+        - Cuando llegó al máximo de preguntas
         
         Args:
             question_number: Current question number
-            context: Interview context
+            context: Interview context (usado internamente, no expuesto)
             user_response: Latest user response
+            agent_question: The agent's generated question/response
             
         Returns:
             bool: True if interview should end
         """
-        # 1. Check if user explicitly wants to end
-        # IMPORTANTE: Solo si las palabras están en contexto de finalización
+        # 1. LÍMITE ABSOLUTO: Máximo de preguntas
+        if question_number >= settings.max_questions:
+            print(f"[DEBUG] Ending interview: Max questions reached ({settings.max_questions})")
+            return True
+        
+        # 2. Usuario pide terminar EXPLÍCITAMENTE
         end_keywords = {
             "es": ["quiero terminar", "vamos a terminar", "terminemos", "finalizar la entrevista", "suficiente por hoy", "ya está bien", "nada más gracias"],
             "en": ["let's finish", "i want to finish", "let's end this", "that's enough", "nothing more"],
             "pt": ["vamos terminar", "quero terminar", "já chega", "é suficiente"]
         }
         
-        # Solo finalizamos si el usuario EXPLÍCITAMENTE quiere terminar
-        # No con palabras sueltas como "listo" que pueden ser parte de otra oración
         response_lower = user_response.lower()
         for lang_keywords in end_keywords.values():
             if any(keyword in response_lower for keyword in lang_keywords):
+                print(f"[DEBUG] Ending interview: User requested to finish")
                 return True
         
-        # 2. Never end before minimum questions
+        # 3. SEÑAL DEL AGENTE: Detectar si el agente dice "gracias por tu tiempo" u otras frases de cierre
+        # Esto indica que el LLM decidió que ya tiene suficiente información
+        closing_signals = {
+            "es": ["gracias por tu tiempo", "muchas gracias", "quedó registrada", "la entrevista", "info quedó registrada"],
+            "en": ["thank you for your time", "thanks for your time", "has been recorded", "successfully recorded"],
+            "pt": ["obrigado pelo seu tempo", "foi registrada", "foi registrado"]
+        }
+        
+        question_lower = agent_question.lower()
+        for lang_signals in closing_signals.values():
+            if any(signal in question_lower for signal in lang_signals):
+                print(f"[DEBUG] Ending interview: Agent signaled completion")
+                return True
+        
+        # 4. MÍNIMO OBLIGATORIO: No terminar antes del mínimo
         if question_number < settings.min_questions:
             return False
         
-        # 3. Always end at maximum questions
-        if question_number >= settings.max_questions:
-            return True
-        
-        # 4. Check if we have enough QUALITY information
-        # Requerimos al menos 2 procesos identificados (no solo 1)
-        # Y que hayamos hecho al menos 10 preguntas (50% del máximo)
-        if (
-            question_number >= 10 and  # Al menos 10 preguntas para asegurar profundidad
-            len(context.processes_identified) >= 2  # Al menos 2 procesos mencionados
-        ):
-            return True
-        
-        # 5. Default: continue interview
+        # 5. DEFAULT: Continuar (confiar en el criterio del agente expresado en el prompt)
         return False
 
 

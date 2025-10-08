@@ -394,6 +394,41 @@ curl http://localhost:8001/api/v1/health
 
 ---
 
+## ✅ **Estado de Validación**
+
+**Última validación:** 8 de octubre, 2025  
+**Estado:** ✅ **TODOS LOS TESTS PASARON**
+
+| Componente | Estado | Observación |
+|------------|--------|-------------|
+| Multi-idioma (ES/EN/PT) | ✅ | Funcional |
+| Eliminación de `context` | ✅ | Implementado |
+| `language` en `meta` | ✅ | Persistido correctamente |
+| Swagger UI actualizado | ✅ | Documentación clara |
+| Docker Services | ✅ | Healthy |
+| Estándar Confluence | ✅ | 100% cumplimiento |
+
+📄 **Ver reporte completo:** [`VALIDATION_REPORT.md`](./VALIDATION_REPORT.md)
+
+---
+
+## 🏗️ **Arquitectura - Diseño Stateless**
+
+Este microservicio usa un diseño **stateless** (sin estado):
+- ❌ NO guarda sesiones en memoria ni base de datos
+- ✅ Cada request debe incluir toda la información necesaria
+- ✅ El `language` debe enviarse en CADA request (`/start` y `/continue`)
+- ✅ Facilita escalado horizontal y alta disponibilidad
+
+📄 **Documentación completa:** [`STATELESS_DESIGN.md`](./STATELESS_DESIGN.md)
+
+**⚠️ IMPORTANTE para Frontend:**
+- Persistir `language` en localStorage
+- Enviarlo en cada request a `/continue`
+- Ver [`FRONTEND_CHANGES.md`](./FRONTEND_CHANGES.md) para detalles de implementación
+
+---
+
 ## 📡 **API Endpoints**
 
 ### **📚 Documentación Interactiva**
@@ -491,13 +526,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
     "question": "Hola Juan, ¿cómo vas? Me alegra tenerte aquí hoy...",
     "question_number": 1,
-    "is_final": false,
-    "context": {}
+    "is_final": false
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "user_name": "Juan Pérez",
-    "organization": "ProssX Demo"
+    "organization": "ProssX Demo",
+    "language": "es"
   }
 }
 ```
@@ -553,13 +588,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
     "question": "Vamos a profundizar un poco más. ¿Cuál es el primer paso...",
     "question_number": 2,
     "is_final": false,
-    "context": {},
-    "corrected_response": "..."
+    "corrected_response": "Soy gerente de operaciones, coordino equipos"
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
-    "question_count": 2
+    "question_count": 2,
+    "language": "es"
   }
 }
 ```
@@ -567,7 +602,9 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
 ---
 
 #### **4. Exportar Entrevista**
-**Descripción:** Exporta los datos completos de la entrevista para análisis posterior.
+**Descripción:** Exporta los datos completos de la entrevista para análisis posterior (sin análisis de IA).
+
+**⚠️ IMPORTANTE:** Como el backend es stateless, debes enviar `conversation_history` completo y `language`.
 
 **Request:**
 ```json
@@ -575,13 +612,34 @@ POST /api/v1/interviews/export
 Content-Type: application/json
 
 {
-  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43"
+  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "¿Cuál es tu función principal?",
+      "timestamp": "2025-10-08T14:15:00Z"
+    },
+    {
+      "role": "user",
+      "content": "Soy gerente de compras",
+      "timestamp": "2025-10-08T14:16:00Z"
+    }
+  ],
+  "language": "es"
 }
 ```
 
 **Ejemplo con PowerShell:**
 ```powershell
-$body = @{ session_id = '1add3c4a-8730-4140-888b-59ac47fcac43' } | ConvertTo-Json
+$body = @{
+  session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
+  conversation_history = @(
+    @{ role = 'assistant'; content = '¿Cuál es tu función?'; timestamp = '2025-10-08T14:15:00Z' },
+    @{ role = 'user'; content = 'Soy gerente'; timestamp = '2025-10-08T14:16:00Z' }
+  )
+  language = 'es'
+} | ConvertTo-Json -Depth 5
+
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/export `
   -Method Post -Body $body -ContentType 'application/json'
 ```
@@ -590,30 +648,51 @@ Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/export `
 ```bash
 curl -X POST http://localhost:8001/api/v1/interviews/export \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"1add3c4a-8730-4140-888b-59ac47fcac43"}'
+  -d '{
+    "session_id":"1add3c4a-8730-4140-888b-59ac47fcac43",
+    "conversation_history":[
+      {"role":"assistant","content":"¿Cuál es tu función?","timestamp":"2025-10-08T14:15:00Z"},
+      {"role":"user","content":"Soy gerente","timestamp":"2025-10-08T14:16:00Z"}
+    ],
+    "language":"es"
+  }'
 ```
 
 **Response:**
 ```json
 {
   "status": "success",
+  "code": 200,
+  "message": "Interview data exported successfully (raw data only)",
   "data": {
-    "session_id": "uuid",
-    "conversation": [
-      {"role": "assistant", "content": "..."},
-      {"role": "user", "content": "..."}
-    ],
-    "metadata": {
-      "user_name": "Juan Pérez",
-      "organization": "ProssX Demo",
-      "start_time": "2025-10-05T10:30:00Z",
-      "duration_minutes": 15
-    }
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "user_id": "user-123",
+    "user_name": "Juan Pérez",
+    "user_role": "Gerente de Operaciones",
+    "organization": "ProssX Demo",
+    "interview_date": "2025-10-08T14:30:00Z",
+    "interview_duration_minutes": 15,
+    "total_questions": 8,
+    "total_user_responses": 8,
+    "is_complete": true,
+    "conversation_history": [...]
+  },
+  "errors": null,
+  "meta": {
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "export_date": "2025-10-08T14:30:00Z",
+    "language": "es",
+    "technical_level": "non-technical",
+    "note": "This is raw data. Process extraction should be done by a separate service."
   }
 }
 ```
 
-**⚠️ Nota:** Este endpoint retorna **solo los datos en crudo**. El análisis de procesos (extracción, estructuración, BPMN) es responsabilidad de otro microservicio que consumirá estos datos.
+**⚠️ Notas Importantes:**
+- ✅ **`language` en `meta`** (no en `metadata` dentro de `data`)
+- ✅ **NO incluye `completeness_score`** (métrica interna eliminada)
+- ✅ **Datos en crudo solamente** - El análisis de procesos (BPMN) es responsabilidad de otro microservicio
+- ✅ **Backend stateless** - Debes enviar `conversation_history` completo y `language`
 
 ---
 
