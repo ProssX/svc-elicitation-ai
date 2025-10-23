@@ -21,11 +21,11 @@ services:
       dockerfile: Dockerfile
     container_name: svc-elicitation-ai
     ports:
-      - "8001:8001"
+      - "8002:8002"
     environment:
       # Application
       - APP_ENV=${APP_ENV:-development}
-      - APP_PORT=8001
+      - APP_PORT=8002
       - APP_HOST=0.0.0.0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       
@@ -34,6 +34,12 @@ services:
       
       # Backend PHP Service
       - BACKEND_PHP_URL=${BACKEND_PHP_URL:-http://host.docker.internal:8000/api/v1}
+      
+      # Authentication Service
+      - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://host.docker.internal:8001}
+      - JWT_ISSUER=${JWT_ISSUER:-https://api.example.com}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-https://api.example.com}
+      - JWKS_CACHE_TTL=${JWKS_CACHE_TTL:-3600}
       
       # Model Provider (local or openai)
       - MODEL_PROVIDER=${MODEL_PROVIDER:-local}
@@ -62,7 +68,7 @@ services:
     restart: unless-stopped
     
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8002/api/v1/health')"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -394,6 +394,265 @@ curl http://localhost:8001/api/v1/health
 
 ---
 
+## ✅ **Estado de Validación**
+
+**Última validación:** 8 de octubre, 2025  
+**Estado:** ✅ **TODOS LOS TESTS PASARON**
+
+| Componente | Estado | Observación |
+|------------|--------|-------------|
+| Multi-idioma (ES/EN/PT) | ✅ | Funcional |
+| Eliminación de `context` | ✅ | Implementado |
+| `language` en `meta` | ✅ | Persistido correctamente |
+| Swagger UI actualizado | ✅ | Documentación clara |
+| Docker Services | ✅ | Healthy |
+| Estándar Confluence | ✅ | 100% cumplimiento |
+
+📄 **Ver reporte completo:** [`VALIDATION_REPORT.md`](./VALIDATION_REPORT.md)
+
+---
+
+## 🏗️ **Arquitectura - Diseño Stateless**
+
+Este microservicio usa un diseño **stateless** (sin estado):
+- ❌ NO guarda sesiones en memoria ni base de datos
+- ✅ Cada request debe incluir toda la información necesaria
+- ✅ El `language` debe enviarse en CADA request (`/start` y `/continue`)
+- ✅ Facilita escalado horizontal y alta disponibilidad
+
+📄 **Documentación completa:** [`STATELESS_DESIGN.md`](./STATELESS_DESIGN.md)
+
+**⚠️ IMPORTANTE para Frontend:**
+- Persistir `language` en localStorage
+- Enviarlo en cada request a `/continue`
+- Ver [`FRONTEND_CHANGES.md`](./FRONTEND_CHANGES.md) para detalles de implementación
+
+---
+
+## 🔐 **Authentication**
+
+This service uses **JWT (JSON Web Token)** authentication provided by the Auth Service (svc-users-python). All interview endpoints require a valid Bearer token.
+
+### **How to Obtain a Token**
+
+#### **Step 1: Login to Auth Service**
+
+The Auth Service must be running at the URL specified in `AUTH_SERVICE_URL` environment variable (default: `http://localhost:8000`).
+
+**Request:**
+```bash
+# Windows PowerShell:
+$body = @{ 
+  email = 'admin@example.com'
+  password = 'admin123' 
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $body -ContentType 'application/json'
+
+$token = $response.data.access_token
+Write-Host "Token: $token"
+
+# Linux/Mac/Git Bash:
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "code": 200,
+  "message": "Login successful",
+  "data": {
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9...",
+    "token_type": "bearer",
+    "expires_in": 604800
+  }
+}
+```
+
+#### **Step 2: Use Token in Requests**
+
+Include the token in the `Authorization` header with the `Bearer` prefix:
+
+**Request:**
+```bash
+# Windows PowerShell:
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
+
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac/Git Bash:
+TOKEN="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9..."
+
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+### **Authentication Configuration**
+
+The AI Service needs to know where the Auth Service is located. Configure this in your `.env` file:
+
+```bash
+# Authentication Service URL (required)
+AUTH_SERVICE_URL=http://localhost:8000
+
+# JWT Configuration (must match Auth Service settings)
+JWT_ISSUER=https://api.example.com
+JWT_AUDIENCE=https://api.example.com
+
+# JWKS Cache TTL in seconds (default: 3600 = 1 hour)
+JWKS_CACHE_TTL=3600
+```
+
+**Docker Configuration:**
+
+If using Docker Compose with both services, update `docker-compose.yml`:
+
+```yaml
+services:
+  elicitation-ai:
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8000  # Use service name for Docker networking
+      - JWT_ISSUER=https://api.example.com
+      - JWT_AUDIENCE=https://api.example.com
+```
+
+### **Authentication Error Responses**
+
+#### **401 Unauthorized - Missing Token**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Authentication required",
+  "errors": [{
+    "field": "authorization",
+    "error": "Missing or invalid authorization header"
+  }]
+}
+```
+
+#### **401 Unauthorized - Token Expired**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Token expired",
+  "errors": [{
+    "field": "token",
+    "error": "JWT token has expired"
+  }]
+}
+```
+
+#### **401 Unauthorized - Invalid Token**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Invalid token",
+  "errors": [{
+    "field": "token",
+    "error": "Token signature verification failed"
+  }]
+}
+```
+
+#### **503 Service Unavailable - Auth Service Down**
+```json
+{
+  "status": "error",
+  "code": 503,
+  "message": "Authentication service unavailable",
+  "errors": [{
+    "field": "service",
+    "error": "Unable to validate token"
+  }]
+}
+```
+
+### **Which Endpoints Require Authentication?**
+
+| Endpoint | Authentication Required | Description |
+|----------|------------------------|-------------|
+| `GET /` | ❌ No | Root endpoint |
+| `GET /api/v1/health` | ❌ No | Health check |
+| `POST /api/v1/interviews/start` | ✅ Yes | Start interview |
+| `POST /api/v1/interviews/continue` | ✅ Yes | Continue interview |
+| `POST /api/v1/interviews/export` | ✅ Yes | Export interview data |
+| `POST /api/v1/interviews/test` | ✅ Yes | Test endpoint |
+
+**Note:** Health check endpoints remain unauthenticated for monitoring purposes.
+
+### **Token Details**
+
+The JWT token contains the following claims:
+
+```json
+{
+  "sub": "01932e5f-8b2a-7890-b123-456789abcdef",  // User ID
+  "organizationId": "01932e5f-1234-5678-9abc-def012345678",  // Organization ID
+  "iss": "https://api.example.com",  // Issuer
+  "aud": "https://api.example.com",  // Audience
+  "iat": 1729526400,  // Issued at
+  "exp": 1730131200,  // Expiration (7 days default)
+  "jti": "01932e5f-uuid7-generated",  // JWT ID
+  "roles": ["admin"],  // User roles
+  "permissions": ["users:read", "users:write", "interviews:manage"]  // Permissions
+}
+```
+
+The AI Service automatically extracts `user_id` and `organization_id` from the token, so you no longer need to send these in the request body.
+
+### **Security Best Practices**
+
+1. **Always use HTTPS in production** - Tokens should never be transmitted over unencrypted connections
+2. **Store tokens securely** - Use httpOnly cookies or secure storage (never localStorage for sensitive apps)
+3. **Handle token expiration** - Implement token refresh logic or redirect to login
+4. **Don't log tokens** - Tokens should never appear in logs or error messages
+5. **Validate on every request** - The AI Service validates tokens on every protected endpoint
+
+### **Troubleshooting Authentication**
+
+#### **Problem: "Authentication service unavailable" (503)**
+
+**Cause:** AI Service cannot reach the Auth Service to fetch JWKS public keys.
+
+**Solutions:**
+1. Verify Auth Service is running: `curl http://localhost:8000/api/v1/health`
+2. Check `AUTH_SERVICE_URL` environment variable is correct
+3. If using Docker, ensure services are on the same network
+4. Check Auth Service logs: `docker logs svc-users-python`
+
+#### **Problem: "Invalid token" (401)**
+
+**Cause:** Token signature verification failed.
+
+**Solutions:**
+1. Ensure `JWT_ISSUER` and `JWT_AUDIENCE` match between services
+2. Verify token hasn't been tampered with
+3. Check that Auth Service is using the correct private key
+4. Ensure JWKS endpoint is accessible: `curl http://localhost:8000/api/v1/auth/jwks`
+
+#### **Problem: "Token expired" (401)**
+
+**Cause:** Token has exceeded its expiration time (default: 7 days).
+
+**Solution:**
+1. Login again to obtain a new token
+2. Implement token refresh mechanism in your frontend
+3. Adjust token expiration time in Auth Service if needed
+
+---
+
 ## 📡 **API Endpoints**
 
 ### **📚 Documentación Interactiva**
@@ -450,35 +709,50 @@ GET /api/v1/health
 #### **2. Iniciar Entrevista**
 **Descripción:** Inicia una nueva sesión de entrevista con el usuario.
 
+**🔐 Authentication Required:** Bearer token in Authorization header
+
 **Request:**
 ```json
 POST /api/v1/interviews/start
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
-  "language": "es",              // "es" | "en" | "pt"
-  "organization_id": "1",         // String (ID de organización)
-  "role_id": "1"                  // String (ID del rol del usuario)
+  "language": "es"  // "es" | "en" | "pt" (optional, default: "es")
 }
 ```
 
+**⚠️ IMPORTANT:** `user_id` and `organization_id` are no longer sent in the request body. They are automatically extracted from the JWT token.
+
 **Ejemplo con PowerShell:**
 ```powershell
-$body = @{ 
-  language = 'es'
-  organization_id = '1'
-  role_id = '1' 
-} | ConvertTo-Json
+# First, obtain token from Auth Service
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$loginResponse = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$token = $loginResponse.data.access_token
+
+# Then, start interview with token
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
 
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
-curl -X POST http://localhost:8001/api/v1/interviews/start \
+# First, obtain token from Auth Service
+TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"language":"es","organization_id":"1","role_id":"1"}'
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Then, start interview with token
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
 ```
 
 **Response:**
@@ -491,13 +765,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
     "question": "Hola Juan, ¿cómo vas? Me alegra tenerte aquí hoy...",
     "question_number": 1,
-    "is_final": false,
-    "context": {}
+    "is_final": false
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "user_name": "Juan Pérez",
-    "organization": "ProssX Demo"
+    "organization": "ProssX Demo",
+    "language": "es"
   }
 }
 ```
@@ -505,9 +779,12 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
 #### **3. Continuar Entrevista**
 **Descripción:** Envía la respuesta del usuario y recibe la siguiente pregunta.
 
+**🔐 Authentication Required:** Bearer token in Authorization header
+
 **Request:**
 ```json
 POST /api/v1/interviews/continue
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
@@ -520,6 +797,8 @@ Content-Type: application/json
 
 **Ejemplo con PowerShell:**
 ```powershell
+# Assuming you already have $token from login
+$headers = @{ Authorization = "Bearer $token" }
 $body = @{ 
   session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
   user_response = 'Soy gerente de operaciones, coordino equipos y apruebo compras'
@@ -528,12 +807,14 @@ $body = @{
 } | ConvertTo-Json -Depth 3
 
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/continue `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
+# Assuming you already have $TOKEN from login
 curl -X POST http://localhost:8001/api/v1/interviews/continue \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
@@ -553,13 +834,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
     "question": "Vamos a profundizar un poco más. ¿Cuál es el primer paso...",
     "question_number": 2,
     "is_final": false,
-    "context": {},
-    "corrected_response": "..."
+    "corrected_response": "Soy gerente de operaciones, coordino equipos"
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
-    "question_count": 2
+    "question_count": 2,
+    "language": "es"
   }
 }
 ```
@@ -567,57 +848,239 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
 ---
 
 #### **4. Exportar Entrevista**
-**Descripción:** Exporta los datos completos de la entrevista para análisis posterior.
+**Descripción:** Exporta los datos completos de la entrevista para análisis posterior (sin análisis de IA).
+
+**🔐 Authentication Required:** Bearer token in Authorization header
+
+**⚠️ IMPORTANTE:** Como el backend es stateless, debes enviar `conversation_history` completo y `language`.
 
 **Request:**
 ```json
 POST /api/v1/interviews/export
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
-  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43"
+  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "¿Cuál es tu función principal?",
+      "timestamp": "2025-10-08T14:15:00Z"
+    },
+    {
+      "role": "user",
+      "content": "Soy gerente de compras",
+      "timestamp": "2025-10-08T14:16:00Z"
+    }
+  ],
+  "language": "es"
 }
 ```
 
 **Ejemplo con PowerShell:**
 ```powershell
-$body = @{ session_id = '1add3c4a-8730-4140-888b-59ac47fcac43' } | ConvertTo-Json
+# Assuming you already have $token from login
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{
+  session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
+  conversation_history = @(
+    @{ role = 'assistant'; content = '¿Cuál es tu función?'; timestamp = '2025-10-08T14:15:00Z' },
+    @{ role = 'user'; content = 'Soy gerente'; timestamp = '2025-10-08T14:16:00Z' }
+  )
+  language = 'es'
+} | ConvertTo-Json -Depth 5
+
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/export `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
+# Assuming you already have $TOKEN from login
 curl -X POST http://localhost:8001/api/v1/interviews/export \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"1add3c4a-8730-4140-888b-59ac47fcac43"}'
+  -d '{
+    "session_id":"1add3c4a-8730-4140-888b-59ac47fcac43",
+    "conversation_history":[
+      {"role":"assistant","content":"¿Cuál es tu función?","timestamp":"2025-10-08T14:15:00Z"},
+      {"role":"user","content":"Soy gerente","timestamp":"2025-10-08T14:16:00Z"}
+    ],
+    "language":"es"
+  }'
 ```
 
 **Response:**
 ```json
 {
   "status": "success",
+  "code": 200,
+  "message": "Interview data exported successfully (raw data only)",
   "data": {
-    "session_id": "uuid",
-    "conversation": [
-      {"role": "assistant", "content": "..."},
-      {"role": "user", "content": "..."}
-    ],
-    "metadata": {
-      "user_name": "Juan Pérez",
-      "organization": "ProssX Demo",
-      "start_time": "2025-10-05T10:30:00Z",
-      "duration_minutes": 15
-    }
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "user_id": "user-123",
+    "user_name": "Juan Pérez",
+    "user_role": "Gerente de Operaciones",
+    "organization": "ProssX Demo",
+    "interview_date": "2025-10-08T14:30:00Z",
+    "interview_duration_minutes": 15,
+    "total_questions": 8,
+    "total_user_responses": 8,
+    "is_complete": true,
+    "conversation_history": [...]
+  },
+  "errors": null,
+  "meta": {
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "export_date": "2025-10-08T14:30:00Z",
+    "language": "es",
+    "technical_level": "non-technical",
+    "note": "This is raw data. Process extraction should be done by a separate service."
   }
 }
 ```
 
-**⚠️ Nota:** Este endpoint retorna **solo los datos en crudo**. El análisis de procesos (extracción, estructuración, BPMN) es responsabilidad de otro microservicio que consumirá estos datos.
+**⚠️ Notas Importantes:**
+- ✅ **`language` en `meta`** (no en `metadata` dentro de `data`)
+- ✅ **NO incluye `completeness_score`** (métrica interna eliminada)
+- ✅ **Datos en crudo solamente** - El análisis de procesos (BPMN) es responsabilidad de otro microservicio
+- ✅ **Backend stateless** - Debes enviar `conversation_history` completo y `language`
 
 ---
 
 ## 🔍 **Troubleshooting**
+
+### **🔐 Authentication Issues**
+
+#### **❌ Error: "Authentication required" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Authentication required"
+
+**Causa:** Falta el token de autenticación o el header Authorization está mal formado
+
+**Solución:**
+```bash
+# ❌ Incorrecto (sin Authorization header):
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+
+# ✅ Correcto (con Bearer token):
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Verificar formato del header:**
+- Debe ser: `Authorization: Bearer <token>`
+- NO: `Authorization: <token>` (falta "Bearer ")
+- NO: `Bearer <token>` (falta "Authorization:")
+
+---
+
+#### **❌ Error: "Token expired" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Token expired"
+
+**Causa:** El token JWT ha superado su tiempo de expiración (default: 7 días)
+
+**Solución:**
+```bash
+# Obtener un nuevo token haciendo login nuevamente
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token'
+```
+
+**Prevención:**
+- Implementar lógica de refresh token en el frontend
+- Verificar expiración antes de hacer requests
+- Redirigir a login cuando el token expire
+
+---
+
+#### **❌ Error: "Invalid token" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Invalid token" o "Token signature verification failed"
+
+**Causas posibles:**
+
+1. **Token corrupto o modificado:**
+```bash
+# Verificar que el token no se haya cortado o modificado
+echo $TOKEN | wc -c  # Debe tener ~500-800 caracteres
+```
+
+2. **Configuración incorrecta de JWT_ISSUER o JWT_AUDIENCE:**
+```bash
+# Verificar que coincidan entre Auth Service y AI Service
+docker exec svc-elicitation-ai printenv | grep JWT
+# Debe mostrar:
+# JWT_ISSUER=https://api.example.com
+# JWT_AUDIENCE=https://api.example.com
+```
+
+3. **JWKS endpoint no accesible:**
+```bash
+# Verificar que el AI Service pueda acceder al JWKS endpoint
+curl http://localhost:8000/api/v1/auth/jwks
+# Debe retornar JSON con las public keys
+```
+
+---
+
+#### **❌ Error: "Authentication service unavailable" (503)**
+
+**Síntoma:** Request rechazado con mensaje "Authentication service unavailable"
+
+**Causa:** El AI Service no puede conectarse al Auth Service para obtener las public keys (JWKS)
+
+**Soluciones:**
+
+1. **Verificar que Auth Service esté corriendo:**
+```bash
+# Verificar health del Auth Service
+curl http://localhost:8000/api/v1/health
+
+# Con Docker:
+docker ps | grep svc-users-python
+docker logs svc-users-python --tail 50
+```
+
+2. **Verificar AUTH_SERVICE_URL:**
+```bash
+# Verificar la variable de entorno
+docker exec svc-elicitation-ai printenv | grep AUTH_SERVICE_URL
+
+# Debe mostrar:
+# - Con Docker: AUTH_SERVICE_URL=http://auth-service:8000
+# - Sin Docker: AUTH_SERVICE_URL=http://localhost:8000
+```
+
+3. **Verificar conectividad de red (Docker):**
+```bash
+# Verificar que ambos servicios estén en la misma red
+docker network inspect <network-name>
+
+# Probar conectividad desde AI Service a Auth Service
+docker exec svc-elicitation-ai curl http://auth-service:8000/api/v1/health
+```
+
+4. **Verificar JWKS endpoint:**
+```bash
+# El endpoint debe estar accesible
+curl http://localhost:8000/api/v1/auth/jwks
+
+# Debe retornar algo como:
+# {"keys":[{"kty":"RSA","kid":"auth-2025-10-15",...}]}
+```
+
+**Nota:** El AI Service cachea las public keys por 1 hora (default). Si el Auth Service está temporalmente caído pero el cache es válido, los requests seguirán funcionando.
+
+---
 
 ### **❌ Error: "All connection attempts failed"**
 
@@ -807,8 +1270,6 @@ svc-elicitation-ai/
 │       └── model_factory.py    # LLM factory (Ollama/OpenAI)
 ├── prompts/
 │   └── system_prompts.py       # System prompts (ES/EN/PT)
-├── data/
-│   └── mock_users.json         # Mock user data (MVP)
 ├── requirements.txt            # Python dependencies
 ├── Dockerfile                  # Docker image
 ├── docker-compose.yml          # Docker Compose config
@@ -828,6 +1289,10 @@ svc-elicitation-ai/
 | `LOG_LEVEL` | Nivel de logs | `INFO` | No |
 | `FRONTEND_URL` | URL del frontend (CORS) | `http://localhost:5173` | No |
 | `BACKEND_PHP_URL` | URL del backend PHP | `http://localhost:8000/api/v1` | No |
+| **`AUTH_SERVICE_URL`** | **URL del Auth Service (svc-users-python)** | `http://localhost:8000` | **Sí** |
+| **`JWT_ISSUER`** | **Issuer esperado en tokens JWT** | `https://api.example.com` | **Sí** |
+| **`JWT_AUDIENCE`** | **Audience esperado en tokens JWT** | `https://api.example.com` | **Sí** |
+| `JWKS_CACHE_TTL` | Tiempo de cache de JWKS en segundos | `3600` (1 hora) | No |
 | **`MODEL_PROVIDER`** | **Proveedor: `local` o `openai`** | `local` | **Sí** |
 | `OPENAI_API_KEY` | API Key de OpenAI | - | Solo si `openai` |
 | `OPENAI_MODEL` | Modelo de OpenAI | `gpt-4o` | No |
@@ -1008,6 +1473,21 @@ docker-compose up -d                                    # Levantar servicios
 docker exec ollama-service ollama pull llama3.2:3b     # Descargar modelo (solo 1ra vez)
 curl http://localhost:8001/api/v1/health               # Verificar que funciona
 
+# 🔐 AUTENTICACIÓN
+# PowerShell - Obtener token:
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login -Method Post -Body $loginBody -ContentType 'application/json'
+$token = $response.data.access_token
+
+# Linux/Mac - Obtener token:
+TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Verificar JWKS endpoint:
+curl http://localhost:8000/api/v1/auth/jwks
+
 # 📊 MONITOREO
 docker ps                                               # Ver contenedores corriendo
 docker-compose logs -f                                  # Ver logs en vivo
@@ -1021,17 +1501,23 @@ docker-compose up -d --build                            # Rebuild y reiniciar
 # 🔍 DEBUG
 docker exec ollama-service ollama list                  # Ver modelos instalados
 docker exec svc-elicitation-ai printenv | grep MODEL   # Ver config del modelo
+docker exec svc-elicitation-ai printenv | grep AUTH    # Ver config de autenticación
 docker logs svc-elicitation-ai --tail 50               # Ver últimos 50 logs
+docker logs svc-users-python --tail 50                 # Ver logs del Auth Service
 
 # 🧪 TESTING
-# PowerShell:
+# PowerShell (con autenticación):
 Invoke-RestMethod http://localhost:8001/api/v1/health
-$body = @{ language = 'es'; organization_id = '1'; role_id = '1' } | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Body $body -ContentType 'application/json'
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 
-# Linux/Mac/Git Bash:
+# Linux/Mac/Git Bash (con autenticación):
 curl http://localhost:8001/api/v1/health
-curl -X POST http://localhost:8001/api/v1/interviews/start -H "Content-Type: application/json" -d '{"language":"es","organization_id":"1","role_id":"1"}'
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
 ```
 
 ---

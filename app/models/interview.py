@@ -14,7 +14,19 @@ class ConversationMessage(BaseModel):
 
 
 class InterviewContext(BaseModel):
-    """Context information gathered during the interview"""
+    """
+    Context information gathered during the interview
+    
+    ⚠️ **INTERNAL USE ONLY** - NOT exposed in API responses
+    
+    This model is used internally by the agent to:
+    - Track conversation progress
+    - Determine when to finish the interview
+    - Analyze conversation quality
+    
+    It is NOT returned in API responses to keep them clean and focused.
+    Only session_id, question, question_number, and is_final are exposed.
+    """
     processes_identified: List[str] = Field(
         default_factory=list,
         description="List of business processes mentioned by the user"
@@ -36,11 +48,23 @@ class InterviewContext(BaseModel):
 
 
 class InterviewResponse(BaseModel):
-    """Response from the agent after each interaction"""
+    """
+    Response from the agent after each interaction
+    
+    ℹ️ This is the INTERNAL model used by agent_service.py
+    
+    The API responses (in routers/interviews.py) only expose a subset:
+    - question
+    - question_number
+    - is_final
+    - corrected_response (optional)
+    
+    The 'context' field is kept for internal logic but NOT returned to clients.
+    """
     question: str = Field(description="The next question for the user")
     question_number: int = Field(description="Current question number")
     is_final: bool = Field(description="Whether this is the final question")
-    context: InterviewContext = Field(description="Accumulated context")
+    context: InterviewContext = Field(description="Accumulated context (internal only)")
     original_user_response: Optional[str] = Field(
         default=None,
         description="Original user response (before spell check)"
@@ -53,9 +77,6 @@ class InterviewResponse(BaseModel):
 
 class StartInterviewRequest(BaseModel):
     """Request to start a new interview session"""
-    user_id: Optional[str] = Field(default=None, description="User ID from auth system")
-    organization_id: Optional[str] = Field(default=None, description="Organization ID")
-    role_id: Optional[str | int] = Field(default=None, description="User's role ID (string or int)")
     language: str = Field(
         default="es",
         description="Interview language (es=Español, en=English, pt=Português)"
@@ -64,9 +85,6 @@ class StartInterviewRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "user_id": "user-123",
-                "organization_id": "0199a7e0-0b6c-7e23-ba4e-730599c09377",
-                "role_id": "0199a7e0-2f05-79ea-918a-771cf41067d5",
                 "language": "es"
             }
         }
@@ -100,19 +118,45 @@ class ContinueInterviewRequest(BaseModel):
                         "content": "Soy gerente de operaciones",
                         "timestamp": "2025-10-03T00:01:00Z"
                     }
-                ]
+                ],
+                "language": "es"
             }
         }
 
 
 class ExportInterviewRequest(BaseModel):
-    """Request to export raw interview data"""
+    """
+    Request to export raw interview data
+    
+    Frontend should send the complete interview data collected during the session.
+    Backend is stateless, so all data must be provided.
+    """
     session_id: str = Field(description="Interview session ID")
+    conversation_history: List[ConversationMessage] = Field(
+        description="Complete conversation history from the interview"
+    )
+    language: str = Field(
+        default="es",
+        description="Interview language (es=Español, en=English, pt=Português)"
+    )
     
     class Config:
         json_schema_extra = {
             "example": {
-                "session_id": "550e8400-e29b-41d4-a716-446655440000"
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "conversation_history": [
+                    {
+                        "role": "assistant",
+                        "content": "¿Cuál es tu rol?",
+                        "timestamp": "2025-10-08T00:00:00Z"
+                    },
+                    {
+                        "role": "user",
+                        "content": "Soy gerente",
+                        "timestamp": "2025-10-08T00:01:00Z"
+                    }
+                ],
+                "language": "es"
             }
         }
 
@@ -121,13 +165,18 @@ class InterviewExportData(BaseModel):
     """
     Raw interview data export
     
-    This endpoint provides the complete conversation and metadata
-    WITHOUT any AI analysis. The analysis should be done by a 
-    separate service/process.
+    This provides the complete conversation WITHOUT any AI analysis.
     
     **Design principle**: Separation of concerns
     - This service: Conducts interviews and exports raw data
-    - Another service: Analyzes data and extracts processes
+    - Another service: Analyzes data and extracts processes (BPMN generation)
+    
+    **What's included:**
+    - ✅ Full conversation history
+    - ✅ Basic metrics (question count, duration)
+    - ✅ User info (name, role, organization)
+    - ❌ NO completeness_score (internal metric removed)
+    - ❌ NO process extraction (done by another service)
     """
     session_id: str = Field(description="Interview session ID")
     user_id: Optional[str] = Field(default=None, description="User ID")
@@ -135,53 +184,39 @@ class InterviewExportData(BaseModel):
     user_role: str = Field(description="User role")
     organization: str = Field(description="Organization name")
     interview_date: datetime = Field(description="Interview completion date")
-    interview_duration_minutes: Optional[int] = Field(default=None, description="Interview duration")
-    total_questions: int = Field(description="Number of questions asked")
-    total_user_responses: int = Field(description="Number of user responses")
-    completeness_score: float = Field(
-        description="Interview completeness score (0.0 - 1.0)",
-        ge=0.0,
-        le=1.0
-    )
+    interview_duration_minutes: Optional[int] = Field(default=None, description="Interview duration in minutes")
+    total_questions: int = Field(description="Number of questions asked by the agent")
+    total_user_responses: int = Field(description="Number of responses given by the user")
     is_complete: bool = Field(description="Whether interview was completed (is_final=true)")
     conversation_history: List[ConversationMessage] = Field(
-        description="Full conversation (questions + answers)"
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional metadata (technical_level, language, etc)"
+        description="Full conversation history (questions + answers)"
     )
     
     class Config:
         json_schema_extra = {
             "example": {
                 "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                "user_id": "user-123",
+                "user_id": "01932e5f-8b2a-7890-b123-456789abcdef",
                 "user_name": "Juan Pérez",
                 "user_role": "Gerente de Operaciones",
                 "organization": "ProssX Demo",
-                "interview_date": "2025-10-03T14:30:00Z",
+                "interview_date": "2025-10-08T14:30:00Z",
                 "interview_duration_minutes": 15,
                 "total_questions": 8,
                 "total_user_responses": 8,
-                "completeness_score": 0.85,
                 "is_complete": True,
                 "conversation_history": [
                     {
                         "role": "assistant",
                         "content": "¿Cuál es tu función principal?",
-                        "timestamp": "2025-10-03T14:15:00Z"
+                        "timestamp": "2025-10-08T14:15:00Z"
                     },
                     {
                         "role": "user",
                         "content": "Soy gerente de compras, apruebo solicitudes",
-                        "timestamp": "2025-10-03T14:16:00Z"
+                        "timestamp": "2025-10-08T14:16:00Z"
                     }
-                ],
-                "metadata": {
-                    "technical_level": "non-technical",
-                    "language": "es"
-                }
+                ]
             }
         }
 

@@ -34,14 +34,15 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
-# Expose port
-EXPOSE 8001
+# Expose port (default 8002, can be overridden by APP_PORT env var)
+EXPOSE 8002
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8001/api/v1/health')"
+    CMD python -c "import requests; requests.get('http://localhost:8002/api/v1/health')"
 
 # Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Port is configured via APP_PORT environment variable (default: 8002)
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8002}"]
 
 
