@@ -77,9 +77,6 @@ class InterviewResponse(BaseModel):
 
 class StartInterviewRequest(BaseModel):
     """Request to start a new interview session"""
-    user_id: Optional[str] = Field(default=None, description="User ID from auth system")
-    organization_id: Optional[str] = Field(default=None, description="Organization ID")
-    role_id: Optional[str | int] = Field(default=None, description="User's role ID (string or int)")
     language: str = Field(
         default="es",
         description="Interview language (es=Español, en=English, pt=Português)"
@@ -88,9 +85,6 @@ class StartInterviewRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "user_id": "user-123",
-                "organization_id": "0199a7e0-0b6c-7e23-ba4e-730599c09377",
-                "role_id": "0199a7e0-2f05-79ea-918a-771cf41067d5",
                 "language": "es"
             }
         }
@@ -202,7 +196,7 @@ class InterviewExportData(BaseModel):
         json_schema_extra = {
             "example": {
                 "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                "user_id": "user-123",
+                "user_id": "01932e5f-8b2a-7890-b123-456789abcdef",
                 "user_name": "Juan Pérez",
                 "user_role": "Gerente de Operaciones",
                 "organization": "ProssX Demo",

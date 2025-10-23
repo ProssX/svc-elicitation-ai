@@ -4,48 +4,57 @@ Handles all interview-related endpoints
 """
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.models.interview import StartInterviewRequest, ContinueInterviewRequest, ExportInterviewRequest, InterviewExportData
 from app.models.responses import success_response, error_response
 from app.services.agent_service import get_agent
 from app.services.context_service import get_context_service
+from app.middleware.auth_middleware import get_current_user
+from app.services.token_validator import TokenPayload
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
 
 @router.post("/test")
-async def test_interview(request: StartInterviewRequest):
+async def test_interview(
+    request: StartInterviewRequest,
+    current_user: TokenPayload = Depends(get_current_user)
+):
     """
     Test endpoint - Returns mock response without calling LLM
     """
     return success_response(
         data={
             "session_id": "test-session-123",
-            "question": f"Hola! Soy el Agente ProssX. Test mode activo. Usuario: {request.user_id}, Org: {request.organization_id}, Role: {request.role_id}, Language: {request.language}",
+            "question": f"Hola! Soy el Agente ProssX. Test mode activo. Usuario: {current_user.user_id}, Org: {current_user.organization_id}, Language: {request.language}",
             "question_number": 1,
             "is_final": False
         },
         message="Test interview started successfully",
         meta={
             "test_mode": True,
-            "language": request.language
+            "language": request.language,
+            "user_id": current_user.user_id,
+            "organization_id": current_user.organization_id
         }
     )
 
 
 @router.post("/start", response_model=None)
-async def start_interview(request: StartInterviewRequest):
+async def start_interview(
+    request: StartInterviewRequest,
+    current_user: TokenPayload = Depends(get_current_user)
+):
     """
     Start a new interview session
     
     Creates a new interview session and returns the first question.
     
+    **Authentication Required:** Bearer token in Authorization header
+    
     **Request Structure:**
     ```json
     {
-      "user_id": "optional-user-id",
-      "organization_id": "1",
-      "role_id": "1",
       "language": "es"  // Optional: es|en|pt (default: "es")
     }
     ```
@@ -83,8 +92,8 @@ async def start_interview(request: StartInterviewRequest):
         # Get context service
         context_service = get_context_service()
         
-        # Get user context
-        user_context = await context_service.get_user_context(request.user_id)
+        # Get user context using authenticated user_id from token
+        user_context = await context_service.get_user_context(current_user.user_id)
         
         # Get agent
         agent = get_agent()
@@ -132,11 +141,16 @@ async def start_interview(request: StartInterviewRequest):
 
 
 @router.post("/continue", response_model=None)
-async def continue_interview(request: ContinueInterviewRequest):
+async def continue_interview(
+    request: ContinueInterviewRequest,
+    current_user: TokenPayload = Depends(get_current_user)
+):
     """
     Continue an ongoing interview
     
     Receives user's response and returns the next question.
+    
+    **Authentication Required:** Bearer token in Authorization header
     
     **⚠️ IMPORTANT:** The `language` parameter is REQUIRED in each request 
     because the backend is stateless (doesn't store session data). 
@@ -183,8 +197,8 @@ async def continue_interview(request: ContinueInterviewRequest):
         # Get context service
         context_service = get_context_service()
         
-        # For now, use mock user (in production, get from session/auth)
-        user_context = await context_service.get_user_context("user-123")
+        # Get user context using authenticated user_id from token
+        user_context = await context_service.get_user_context(current_user.user_id)
         
         # Get agent
         agent = get_agent()
@@ -227,9 +241,14 @@ async def continue_interview(request: ContinueInterviewRequest):
 
 
 @router.post("/export", response_model=None)
-async def export_interview(request: ExportInterviewRequest):
+async def export_interview(
+    request: ExportInterviewRequest,
+    current_user: TokenPayload = Depends(get_current_user)
+):
     """
     Export raw interview data (NO AI analysis)
+    
+    **Authentication Required:** Bearer token in Authorization header
     
     **Design Principle**: This endpoint ONLY exports the raw conversation data.
     It does NOT perform any AI analysis or process extraction.
@@ -288,8 +307,8 @@ async def export_interview(request: ExportInterviewRequest):
         # Get context service
         context_service = get_context_service()
         
-        # Get user context (mock for MVP)
-        user_context = await context_service.get_user_context("user-123")
+        # Get user context using authenticated user_id from token
+        user_context = await context_service.get_user_context(current_user.user_id)
         
         # Calculate metrics from conversation_history
         total_questions = len([m for m in request.conversation_history if m.role == "assistant"])
@@ -307,7 +326,7 @@ async def export_interview(request: ExportInterviewRequest):
         # Create export data
         export_data = InterviewExportData(
             session_id=request.session_id,
-            user_id="user-123",  # From auth in production
+            user_id=current_user.user_id,  # From authenticated token
             user_name=user_context.get("name", "Usuario"),
             user_role=user_context.get("role", "Empleado"),
             organization=user_context.get("organization", "Organización"),
