@@ -653,6 +653,270 @@ The AI Service automatically extracts `user_id` and `organization_id` from the t
 
 ---
 
+## 💾 **Database Setup**
+
+This service uses **PostgreSQL 17.6** to persist interview data. Interviews and messages are stored in a relational database for analysis, auditing, and recovery.
+
+### **Database Architecture**
+
+```
+┌─────────────────────────────────────────┐
+│         PostgreSQL 17.6-alpine          │
+│                                         │
+│  ┌───────────────────────────────────┐ │
+│  │  interview                        │ │
+│  │  - id_interview (UUID PK)         │ │
+│  │  - employee_id (UUID, indexed)    │ │
+│  │  - language, status, timestamps   │ │
+│  └──────────────┬────────────────────┘ │
+│                 │ 1:N                   │
+│  ┌──────────────▼────────────────────┐ │
+│  │  interview_message                │ │
+│  │  - id_message (UUID PK)           │ │
+│  │  - interview_id (UUID FK CASCADE) │ │
+│  │  - role, content, sequence_number │ │
+│  └───────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+### **Database Configuration**
+
+Add these environment variables to your `.env` file:
+
+```bash
+# Database Connection (required)
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/elicitation_ai
+
+# Connection Pool Settings (optional)
+DB_POOL_SIZE=20
+DB_MAX_OVERFLOW=10
+DB_POOL_TIMEOUT=30
+DB_POOL_RECYCLE=3600
+```
+
+**Docker Configuration:**
+
+If using Docker Compose, the database service is already configured. Update `docker-compose.yml` if needed:
+
+```yaml
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: elicitation_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elicitation-ai:
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/elicitation_ai
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+```
+
+### **Database Migrations with Alembic**
+
+This project uses **Alembic** for database schema migrations.
+
+#### **Initial Setup (First Time)**
+
+```bash
+# 1. Ensure PostgreSQL is running
+docker-compose up -d postgres
+
+# Or without Docker:
+# Make sure PostgreSQL 17.6 is installed and running
+
+# 2. Apply migrations
+python -m alembic upgrade head
+```
+
+#### **Common Migration Commands**
+
+```bash
+# Apply all pending migrations
+python -m alembic upgrade head
+
+# Rollback last migration
+python -m alembic downgrade -1
+
+# Rollback all migrations
+python -m alembic downgrade base
+
+# View migration history
+python -m alembic history
+
+# View current migration version
+python -m alembic current
+
+# Create a new migration (after modifying models)
+python -m alembic revision --autogenerate -m "description_of_changes"
+```
+
+#### **Migration Files Location**
+
+Migrations are stored in: `alembic/versions/`
+
+Current migrations:
+- `20250124_1430_a1b2c3d4e5f6_create_interview_tables.py` - Initial schema
+
+### **Database Schema Details**
+
+#### **Table: interview**
+
+Stores interview metadata and session information.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_interview` | UUID | Primary key (UUID v7 or v4) |
+| `employee_id` | UUID | Reference to employee (indexed) |
+| `language` | ENUM | Interview language (es/en/pt) |
+| `technical_level` | VARCHAR(20) | User's technical level |
+| `status` | ENUM | Interview status (in_progress/completed/cancelled) |
+| `started_at` | TIMESTAMP | When interview started |
+| `completed_at` | TIMESTAMP | When interview completed (nullable) |
+| `created_at` | TIMESTAMP | Record creation timestamp |
+| `updated_at` | TIMESTAMP | Record last update timestamp |
+
+**Indexes:**
+- `idx_interview_employee_id` on `employee_id`
+- `idx_interview_status` on `status`
+- `idx_interview_started_at` on `started_at`
+
+#### **Table: interview_message**
+
+Stores individual messages (questions and answers) in the conversation.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_message` | UUID | Primary key (UUID v7 or v4) |
+| `interview_id` | UUID | Foreign key to interview (CASCADE DELETE) |
+| `role` | ENUM | Message role (assistant/user/system) |
+| `content` | TEXT | Message content |
+| `sequence_number` | INTEGER | Message order in conversation (1-based) |
+| `created_at` | TIMESTAMP | Message creation timestamp |
+
+**Indexes:**
+- `idx_interview_sequence` on `(interview_id, sequence_number)`
+
+**Foreign Keys:**
+- `interview_id` → `interview.id_interview` (ON DELETE CASCADE)
+
+### **Database Troubleshooting**
+
+#### **❌ Error: "No module named 'asyncpg'"**
+
+**Solution:**
+```bash
+pip install asyncpg>=0.29.0
+```
+
+#### **❌ Error: "Connection refused" when running migrations**
+
+**Cause:** PostgreSQL is not running
+
+**Solution:**
+```bash
+# With Docker:
+docker-compose up -d postgres
+docker ps | grep postgres  # Verify it's running
+
+# Without Docker:
+# Start PostgreSQL service on your system
+# Windows: services.msc → PostgreSQL → Start
+# Linux: sudo systemctl start postgresql
+# Mac: brew services start postgresql
+```
+
+#### **❌ Error: "Database does not exist"**
+
+**Solution:**
+```bash
+# Create database manually
+docker exec -it postgres-container psql -U postgres -c "CREATE DATABASE elicitation_ai;"
+
+# Or connect and create:
+docker exec -it postgres-container psql -U postgres
+CREATE DATABASE elicitation_ai;
+\q
+```
+
+#### **❌ Error: "Migration already exists"**
+
+**Cause:** Trying to apply a migration that's already been applied
+
+**Solution:**
+```bash
+# Check current version
+python -m alembic current
+
+# View history
+python -m alembic history
+
+# If needed, mark migration as applied without running it
+python -m alembic stamp head
+```
+
+### **Database Backup and Restore**
+
+#### **Backup**
+
+```bash
+# With Docker:
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup.sql
+
+# Without Docker:
+pg_dump -U postgres elicitation_ai > backup.sql
+```
+
+#### **Restore**
+
+```bash
+# With Docker:
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql
+
+# Without Docker:
+psql -U postgres elicitation_ai < backup.sql
+```
+
+### **Database Connection Validation**
+
+The service automatically validates the database connection on startup. Check the logs:
+
+```bash
+# With Docker:
+docker logs svc-elicitation-ai | grep -i database
+
+# Expected output:
+# ✅ Database connection validated successfully
+```
+
+If you see:
+```
+❌ Database connection failed: ...
+```
+
+Check:
+1. PostgreSQL is running
+2. `DATABASE_URL` is correct
+3. Database exists
+4. User has proper permissions
+
+---
+
 ## 📡 **API Endpoints**
 
 ### **📚 Documentación Interactiva**

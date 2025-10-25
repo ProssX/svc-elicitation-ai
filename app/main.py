@@ -4,8 +4,31 @@ Main entry point for the elicitation AI microservice
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from app.config import settings
 from app.routers import health, interviews
+from app.database import validate_database_connection, close_database_connection
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for startup and shutdown events
+    """
+    # Startup
+    logger.info("Starting up application...")
+    db_connected = await validate_database_connection()
+    if not db_connected:
+        logger.warning("⚠️  Database connection failed - application will start but database operations will fail")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application...")
+    await close_database_connection()
 
 # Create FastAPI app
 app = FastAPI(
@@ -14,6 +37,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
     openapi_tags=[
         {
             "name": "health",

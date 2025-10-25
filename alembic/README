@@ -1,0 +1,30 @@
+Generic single-database configuration with async support for SQLAlchemy.
+
+This directory contains Alembic migration scripts for the elicitation-ai database.
+
+## Common Commands
+
+Generate a new migration (auto-detect changes):
+```bash
+alembic revision --autogenerate -m "description of changes"
+```
+
+Apply all pending migrations:
+```bash
+alembic upgrade head
+```
+
+Rollback one migration:
+```bash
+alembic downgrade -1
+```
+
+View migration history:
+```bash
+alembic history
+```
+
+View current revision:
+```bash
+alembic current
+```

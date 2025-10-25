@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     log_level: str = "INFO"
     
+    # Database
+    database_url: str
+    db_pool_size: int = 20
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 3600
+    
     # CORS
     frontend_url: str = "http://localhost:5173"
     
@@ -62,6 +69,23 @@ class Settings(BaseSettings):
         
         # Remove trailing slash for consistency
         return v.rstrip('/')
+    
+    @field_validator('database_url')
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        """Validate that DATABASE_URL is properly formatted for PostgreSQL"""
+        if not v:
+            raise ValueError("DATABASE_URL must be configured")
+        
+        v = v.strip()
+        
+        # Check for asyncpg driver (required for async SQLAlchemy)
+        if not v.startswith('postgresql+asyncpg://'):
+            raise ValueError(
+                f"DATABASE_URL must use postgresql+asyncpg:// driver for async support, got: {v}"
+            )
+        
+        return v
     
     @property
     def jwks_url(self) -> str:
