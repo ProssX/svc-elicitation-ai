@@ -4,7 +4,7 @@ Manages environment variables and application settings
 """
 from pydantic_settings import BaseSettings
 from pydantic import field_validator, ValidationError
-from typing import Literal
+from typing import Literal, Optional, Union
 import sys
 
 
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     model_provider: Literal["local", "openai"] = "local"
     
     # OpenAI
-    openai_api_key: str | None = None
+    openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o"
     
     # Ollama

@@ -222,7 +222,7 @@
   - Implementar `DatabaseConnectionError`
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-- [ ] 8. Registrar exception handlers en FastAPI
+- [x] 8. Registrar exception handlers en FastAPI
   - Actualizar `app/main.py` con exception handlers
   - Registrar handler para `InterviewNotFoundError` (404)
   - Registrar handler para `InterviewAccessDeniedError` (403)
@@ -231,7 +231,7 @@
   - Registrar handler genérico para `SQLAlchemyError` (500)
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-- [ ] 9. Actualizar endpoint POST /interviews/start
+- [x] 9. Actualizar endpoint POST /interviews/start
   - Modificar `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Mantener lógica actual de `AgentService.start_interview()`
@@ -240,7 +240,7 @@
   - Mantener formato de respuesta estándar ProssX
   - _Requirements: 3.1, 4.1, 4.2, 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [ ] 10. Actualizar endpoint POST /interviews/continue
+- [x] 10. Actualizar endpoint POST /interviews/continue
   - Modificar `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Validar que `interview_id` esté en request body
@@ -249,7 +249,7 @@
   - Manejar errores de validación (interview no encontrada, acceso denegado)
   - _Requirements: 3.2, 4.1, 4.2, 4.3, 4.4, 4.5, 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [ ] 11. Crear endpoint GET /interviews/{interview_id}
+- [x] 11. Crear endpoint GET /interviews/{interview_id}
   - Agregar nuevo endpoint en `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Validar JWT y extraer employee_id
@@ -258,7 +258,7 @@
   - Manejar errores 404 y 403
   - _Requirements: 3.2, 9.2, 9.3, 10.1, 10.2, 10.5_
 
-- [ ] 12. Crear endpoint GET /interviews
+- [x] 12. Crear endpoint GET /interviews
   - Agregar nuevo endpoint en `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Validar JWT y extraer employee_id
@@ -267,7 +267,7 @@
   - Retornar lista con metadata de paginación
   - _Requirements: 3.3, 6.1, 6.2, 6.3, 6.4, 6.5, 10.1, 10.2, 10.5_
 
-- [ ] 13. Crear endpoint PATCH /interviews/{interview_id}
+- [x] 13. Crear endpoint PATCH /interviews/{interview_id}
   - Agregar nuevo endpoint en `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Validar JWT y extraer employee_id
@@ -276,7 +276,7 @@
   - Retornar interview actualizada
   - _Requirements: 3.4, 9.2, 9.3, 10.1, 10.2, 10.5_
 
-- [ ] 14. Crear endpoint POST /interviews/migrate
+- [x] 14. Crear endpoint POST /interviews/migrate
   - Agregar nuevo endpoint en `app/routers/interviews.py`
   - Inyectar `db: AsyncSession = Depends(get_db)`
   - Validar JWT y extraer employee_id
@@ -286,7 +286,7 @@
   - Manejar error 409 si ya existe
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 9.1, 10.1, 10.2, 10.5_
 
-- [ ] 15. Actualizar endpoint POST /interviews/export
+- [x] 15. Actualizar endpoint POST /interviews/export
   - Modificar `app/routers/interviews.py`
   - Cambiar para obtener datos desde DB en lugar de request body
   - Recibir solo `interview_id` en body
@@ -294,7 +294,7 @@
   - Mantener formato actual de `InterviewExportData`
   - _Requirements: 3.2, 10.1, 10.2, 10.5_
 
-- [ ] 16. Actualizar docker-compose.yml
+- [x] 16. Actualizar docker-compose.yml
   - Agregar servicio `postgres` para base de datos
   - Usar imagen `postgres:17.6-alpine`
   - Configurar variables de entorno (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD)
@@ -304,7 +304,7 @@
   - Configurar `depends_on` en servicio `elicitation-ai`
   - _Requirements: 7.1, 7.2, 7.5_
 
-- [ ] 17. Actualizar README con instrucciones de base de datos
+- [x] 17. Actualizar README con instrucciones de base de datos
   - Agregar sección "Database Setup"
   - Documentar cómo ejecutar migraciones con Alembic
   - Documentar variables de entorno de base de datos
@@ -312,7 +312,7 @@
   - Documentar cómo hacer rollback de migraciones
   - _Requirements: 8.5_
 
-- [ ]* 18. Escribir tests unitarios para repositories
+- [x] 18. Escribir tests unitarios para repositories
   - Crear `tests/unit/repositories/test_interview_repository.py`
   - Crear `tests/unit/repositories/test_message_repository.py`
   - Usar fixtures con base de datos en memoria (SQLite)

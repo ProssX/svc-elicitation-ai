@@ -93,7 +93,8 @@ class StartInterviewRequest(BaseModel):
 
 class ContinueInterviewRequest(BaseModel):
     """Request to continue an ongoing interview"""
-    session_id: str = Field(description="Interview session ID")
+    interview_id: str = Field(description="Interview ID from database (required for persistence)")
+    session_id: str = Field(description="Interview session ID (legacy, for compatibility)")
     user_response: str = Field(description="User's response to the previous question")
     conversation_history: List[ConversationMessage] = Field(
         description="Full conversation history (stateless)"
@@ -106,6 +107,7 @@ class ContinueInterviewRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
                 "session_id": "550e8400-e29b-41d4-a716-446655440000",
                 "user_response": "Soy responsable del proceso de aprobación de compras",
                 "conversation_history": [
@@ -387,35 +389,6 @@ class PaginationMeta(BaseModel):
         }
 
 
-class MigrateInterviewRequest(BaseModel):
-    """Request model for migrating interview from localStorage"""
-    session_id: str = Field(description="Original session ID from localStorage")
-    conversation_history: List[ConversationMessage] = Field(
-        description="Complete conversation history to migrate"
-    )
-    language: str = Field(default="es", pattern="^(es|en|pt)$", description="Interview language")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                "conversation_history": [
-                    {
-                        "role": "assistant",
-                        "content": "¿Cuál es tu rol?",
-                        "timestamp": "2025-10-25T10:00:00Z"
-                    },
-                    {
-                        "role": "user",
-                        "content": "Soy gerente",
-                        "timestamp": "2025-10-25T10:01:00Z"
-                    }
-                ],
-                "language": "es"
-            }
-        }
-
-
 class UpdateInterviewStatusRequest(BaseModel):
     """Request model for updating interview status"""
     status: Literal["in_progress", "completed", "cancelled"] = Field(
@@ -426,5 +399,16 @@ class UpdateInterviewStatusRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "status": "completed"
+            }
+        }
+
+class ExportInterviewFromDBRequest(BaseModel):
+    """Request model for exporting interview data from database"""
+    interview_id: str = Field(description="Interview UUID to export")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "interview_id": "018e5f8b-1234-7890-abcd-123456789abc"
             }
         }

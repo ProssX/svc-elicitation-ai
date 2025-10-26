@@ -653,6 +653,293 @@ The AI Service automatically extracts `user_id` and `organization_id` from the t
 
 ---
 
+## 🔐 **Authorization & Permissions**
+
+This service implements **Permission-Based Access Control (PBAC)** to control what users can do with interviews. Permissions are included in the JWT token and validated on every request.
+
+### **Permission System Overview**
+
+**Key Concepts:**
+- **Permissions** control what actions users can perform (e.g., create, read, update interviews)
+- **Permissions come from the JWT token** - no database queries needed
+- **Format:** `resource:action` (e.g., `interviews:create`, `interviews:read`)
+- **Ownership validation:** Users can only access their own interviews (unless they have special permissions)
+
+### **Available Permissions**
+
+| Permission | Description | Scope |
+|------------|-------------|-------|
+| `interviews:create` | Create and continue interviews | Own interviews only |
+| `interviews:read` | Read and list interviews | Own interviews only |
+| `interviews:read_all` | Read ALL interviews in organization | Organization-wide (Admin/Manager) |
+| `interviews:update` | Update interview status | Own interviews only |
+| `interviews:export` | Export interviews to documents | Own interviews only |
+
+### **Permission Requirements by Endpoint**
+
+| Endpoint | Method | Required Permission | Ownership Check |
+|----------|--------|---------------------|-----------------|
+| `/interviews/start` | POST | `interviews:create` | N/A (creates new) |
+| `/interviews/continue` | POST | `interviews:create` | ✅ Must own interview |
+| `/interviews` | GET | `interviews:read` | ✅ Auto-filtered by user |
+| `/interviews/{id}` | GET | `interviews:read` | ✅ Must own interview |
+| `/interviews/{id}` | PATCH | `interviews:update` | ✅ Must own interview |
+| `/interviews/export` | POST | `interviews:export` | ✅ Must own interview |
+
+**Note:** Users with `interviews:read_all` can bypass ownership checks and access any interview in their organization.
+
+### **Testing with Different Permissions**
+
+#### **Generating Test JWTs**
+
+For development and testing, you can create JWTs with specific permissions using the Auth Service:
+
+**PowerShell:**
+```powershell
+# Login as admin (has all permissions)
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$adminToken = $response.data.access_token
+
+# Login as regular user (limited permissions)
+$loginBody = @{ email = 'user@example.com'; password = 'user123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$userToken = $response.data.access_token
+```
+
+**Linux/Mac/Git Bash:**
+```bash
+# Login as admin (has all permissions)
+ADMIN_TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Login as regular user (limited permissions)
+USER_TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"user123"}' \
+  | jq -r '.data.access_token')
+```
+
+#### **Testing Permission Scenarios**
+
+**Scenario 1: User with full permissions (Admin)**
+
+```bash
+# PowerShell:
+$headers = @{ Authorization = "Bearer $adminToken" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac:
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Scenario 2: User with limited permissions**
+
+```bash
+# PowerShell:
+$headers = @{ Authorization = "Bearer $userToken" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac:
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Scenario 3: Testing permission denial (403)**
+
+```bash
+# Try to access another user's interview (should fail with 403)
+# PowerShell:
+$headers = @{ Authorization = "Bearer $userToken" }
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/OTHER_USER_INTERVIEW_ID `
+  -Method Get -Headers $headers
+
+# Linux/Mac:
+curl -X GET http://localhost:8001/api/v1/interviews/OTHER_USER_INTERVIEW_ID \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+### **Permission Error Responses**
+
+#### **403 Forbidden - Missing Permission**
+
+When a user lacks the required permission:
+
+```json
+{
+  "status": "error",
+  "code": 403,
+  "message": "Insufficient permissions",
+  "errors": [
+    {
+      "field": "permissions",
+      "error": "Required permission: interviews:create",
+      "user_permissions": ["interviews:read"]
+    }
+  ]
+}
+```
+
+#### **403 Forbidden - Access Denied to Resource**
+
+When a user tries to access another user's interview:
+
+```json
+{
+  "status": "error",
+  "code": 403,
+  "message": "Access denied",
+  "errors": [
+    {
+      "field": "interview_id",
+      "error": "You don't have permission to access this interview"
+    }
+  ]
+}
+```
+
+### **Checking Available Permissions**
+
+You can query the service to see all available permissions:
+
+```bash
+# PowerShell:
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/permissions -Method Get
+
+# Linux/Mac:
+curl http://localhost:8001/api/v1/permissions
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "permissions": [
+      {
+        "name": "interviews:create",
+        "description": "Create and continue interviews"
+      },
+      {
+        "name": "interviews:read",
+        "description": "Read own interviews"
+      },
+      {
+        "name": "interviews:read_all",
+        "description": "Read all interviews in organization (Admin/Manager)"
+      },
+      {
+        "name": "interviews:update",
+        "description": "Update interview status"
+      },
+      {
+        "name": "interviews:export",
+        "description": "Export interviews to documents"
+      }
+    ]
+  }
+}
+```
+
+### **Role-to-Permission Mapping**
+
+The Auth Service (`svc-users-python`) maps user roles to permissions. Here are the recommended mappings:
+
+| Role | Permissions | Can Do |
+|------|-------------|--------|
+| **Admin** | `interviews:create`<br>`interviews:read`<br>`interviews:read_all`<br>`interviews:update`<br>`interviews:export` | Everything - create, view all, update, export any interview |
+| **Manager** | `interviews:create`<br>`interviews:read`<br>`interviews:read_all`<br>`interviews:export` | Create, view all, export (cannot update others' interviews) |
+| **User** | `interviews:create`<br>`interviews:read`<br>`interviews:export` | Create, view own, export own interviews only |
+| **Auditor** | `interviews:read_all` | View all interviews (read-only) |
+
+### **How Permissions Work**
+
+1. **User logs in** to Auth Service (`svc-users-python`)
+2. **Auth Service generates JWT** with user's permissions based on their role
+3. **User sends JWT** in Authorization header with each request
+4. **AI Service validates JWT** and extracts permissions
+5. **AI Service checks** if user has required permission for the endpoint
+6. **AI Service validates ownership** (if applicable) - user can only access their own interviews
+7. **Request succeeds or fails** with 403 if permission is missing
+
+**Example JWT payload with permissions:**
+```json
+{
+  "sub": "user-123",
+  "email": "user@example.com",
+  "organization_id": "org-456",
+  "roles": ["ROLE_USER"],
+  "permissions": [
+    "interviews:create",
+    "interviews:read",
+    "interviews:export"
+  ],
+  "exp": 1735228800,
+  "iat": 1735142400
+}
+```
+
+### **Troubleshooting Permissions**
+
+#### **❌ Error: "Insufficient permissions" (403)**
+
+**Cause:** User doesn't have the required permission for the endpoint
+
+**Solution:**
+1. Check what permissions the user has:
+```bash
+# Decode JWT to see permissions (use jwt.io or a JWT decoder)
+echo $TOKEN | cut -d'.' -f2 | base64 -d | jq .permissions
+```
+
+2. Contact administrator to grant the required permission
+3. Login again to get a new token with updated permissions
+
+#### **❌ Error: "Access denied to this interview" (403)**
+
+**Cause:** User is trying to access an interview that belongs to another user
+
+**Solution:**
+- Users can only access their own interviews (where `employee_id` matches their `user_id`)
+- If you need to access all interviews, request the `interviews:read_all` permission from administrator
+
+#### **❌ Error: "No permissions found in JWT" (403)**
+
+**Cause:** JWT doesn't contain a `permissions` array
+
+**Solution:**
+1. Verify Auth Service is configured to include permissions in JWT
+2. Check Auth Service logs for errors
+3. Contact administrator to configure role-to-permission mapping
+
+### **Security Best Practices**
+
+1. **Permissions are signed in JWT** - Users cannot modify their own permissions
+2. **Stateless validation** - No database queries needed for permission checks (fast!)
+3. **Ownership validation** - Users can only access their own resources by default
+4. **Audit logging** - All permission denials are logged for security monitoring
+5. **Fail-safe defaults** - If permissions are missing, access is denied
+
+### **Documentation**
+
+For detailed permission documentation including implementation details for the Auth Service team, see:
+- **[docs/PERMISSIONS.md](./docs/PERMISSIONS.md)** - Complete permission system documentation
+
+---
+
 ## 💾 **Database Setup**
 
 This service uses **PostgreSQL 17.6** to persist interview data. Interviews and messages are stored in a relational database for analysis, auditing, and recovery.
@@ -733,18 +1020,56 @@ This project uses **Alembic** for database schema migrations.
 
 #### **Initial Setup (First Time)**
 
+**With Docker (Recommended):**
+
 ```bash
-# 1. Ensure PostgreSQL is running
+# 1. Start PostgreSQL service
 docker-compose up -d postgres
 
-# Or without Docker:
-# Make sure PostgreSQL 17.6 is installed and running
+# 2. Wait for PostgreSQL to be ready (check health)
+docker-compose ps postgres  # Should show "healthy"
 
-# 2. Apply migrations
+# 3. Apply migrations
+docker exec svc-elicitation-ai python -m alembic upgrade head
+
+# Alternative: Start all services (migrations run automatically if configured)
+docker-compose up -d
+```
+
+**Without Docker:**
+
+```bash
+# 1. Ensure PostgreSQL 17.6 is installed and running
+# Windows: services.msc → PostgreSQL → Start
+# Linux: sudo systemctl start postgresql
+# Mac: brew services start postgresql
+
+# 2. Create database (if it doesn't exist)
+createdb -U postgres elicitation_ai
+
+# 3. Set environment variables
+export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/elicitation_ai"
+
+# 4. Apply migrations
 python -m alembic upgrade head
 ```
 
-#### **Common Migration Commands**
+**Verify Setup:**
+
+```bash
+# Check that tables were created
+docker exec postgres-container psql -U postgres elicitation_ai -c "\dt"
+
+# Expected output:
+#              List of relations
+#  Schema |       Name        | Type  |  Owner   
+# --------+-------------------+-------+----------
+#  public | alembic_version   | table | postgres
+#  public | interview         | table | postgres
+#  public | interview_message | table | postgres
+```
+
+#### **Development Migration Commands**
 
 ```bash
 # Apply all pending migrations
@@ -753,7 +1078,7 @@ python -m alembic upgrade head
 # Rollback last migration
 python -m alembic downgrade -1
 
-# Rollback all migrations
+# Rollback all migrations (CAUTION: This will drop all tables)
 python -m alembic downgrade base
 
 # View migration history
@@ -764,6 +1089,69 @@ python -m alembic current
 
 # Create a new migration (after modifying models)
 python -m alembic revision --autogenerate -m "description_of_changes"
+
+# Rollback to specific migration
+python -m alembic downgrade <revision_id>
+
+# Show SQL that would be executed (dry run)
+python -m alembic upgrade head --sql
+```
+
+#### **Production Migration Commands**
+
+**⚠️ IMPORTANT:** Always backup your database before running migrations in production!
+
+```bash
+# 1. Create database backup
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup_$(date +%Y%m%d_%H%M%S).sql
+
+# 2. Test migrations on a copy first (recommended)
+# Create test database and restore backup, then test migrations
+
+# 3. Apply migrations to production
+python -m alembic upgrade head
+
+# 4. Verify migration was successful
+python -m alembic current
+python -m alembic history --verbose
+
+# 5. If rollback is needed (EMERGENCY ONLY)
+python -m alembic downgrade -1  # Rollback one migration
+# OR restore from backup:
+# docker exec -i postgres-container psql -U postgres elicitation_ai < backup_YYYYMMDD_HHMMSS.sql
+```
+
+**Production Migration Best Practices:**
+
+1. **Always backup before migrations**
+2. **Test migrations on staging environment first**
+3. **Run migrations during maintenance windows**
+4. **Monitor application logs after migration**
+5. **Have rollback plan ready**
+6. **Use `--sql` flag to review SQL before execution**
+
+#### **Docker Migration Commands**
+
+When using Docker, run migrations inside the container:
+
+```bash
+# Apply migrations using Docker
+docker exec svc-elicitation-ai python -m alembic upgrade head
+
+# Check current migration version
+docker exec svc-elicitation-ai python -m alembic current
+
+# View migration history
+docker exec svc-elicitation-ai python -m alembic history
+
+# Rollback last migration
+docker exec svc-elicitation-ai python -m alembic downgrade -1
+
+# Create new migration (after code changes)
+docker exec svc-elicitation-ai python -m alembic revision --autogenerate -m "description_of_changes"
+
+# Run migrations during container startup (add to docker-compose.yml)
+# command: sh -c "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
 ```
 
 #### **Migration Files Location**
@@ -772,6 +1160,10 @@ Migrations are stored in: `alembic/versions/`
 
 Current migrations:
 - `20250124_1430_a1b2c3d4e5f6_create_interview_tables.py` - Initial schema
+
+**Migration File Naming Convention:**
+- Format: `YYYYMMDD_HHMM_<revision_id>_<description>.py`
+- Example: `20250124_1430_a1b2c3d4e5f6_create_interview_tables.py`
 
 ### **Database Schema Details**
 
@@ -870,6 +1262,53 @@ python -m alembic history
 python -m alembic stamp head
 ```
 
+#### **❌ Error: "Target database is not up to date"**
+
+**Cause:** Database schema is behind the current code version
+
+**Solution:**
+```bash
+# Check what migrations are pending
+python -m alembic history
+python -m alembic current
+
+# Apply pending migrations
+python -m alembic upgrade head
+```
+
+#### **❌ Error: "Can't locate revision identified by"**
+
+**Cause:** Migration file is missing or corrupted
+
+**Solution:**
+```bash
+# List available migrations
+ls alembic/versions/
+
+# If migration file is missing, restore from backup or recreate:
+python -m alembic revision --autogenerate -m "recreate_missing_migration"
+
+# If database is corrupted, restore from backup:
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql
+```
+
+#### **❌ Error: "FATAL: password authentication failed"**
+
+**Cause:** Incorrect database credentials
+
+**Solution:**
+```bash
+# Check DATABASE_URL format
+echo $DATABASE_URL
+# Should be: postgresql+asyncpg://username:password@host:port/database
+
+# With Docker, verify postgres service environment:
+docker-compose exec postgres env | grep POSTGRES
+
+# Test connection manually:
+docker exec postgres-container psql -U postgres -d elicitation_ai -c "SELECT 1;"
+```
+
 ### **Database Backup and Restore**
 
 #### **Backup**
@@ -914,6 +1353,34 @@ Check:
 2. `DATABASE_URL` is correct
 3. Database exists
 4. User has proper permissions
+
+### **Quick Reference - Database Commands**
+
+```bash
+# 🚀 SETUP (First Time)
+docker-compose up -d postgres                                    # Start PostgreSQL
+docker exec svc-elicitation-ai python -m alembic upgrade head   # Apply migrations
+
+# 📊 MIGRATIONS
+docker exec svc-elicitation-ai python -m alembic current        # Check current version
+docker exec svc-elicitation-ai python -m alembic upgrade head   # Apply all pending
+docker exec svc-elicitation-ai python -m alembic downgrade -1   # Rollback last migration
+docker exec svc-elicitation-ai python -m alembic history        # View migration history
+
+# 🔍 INSPECTION
+docker exec postgres-container psql -U postgres elicitation_ai -c "\dt"     # List tables
+docker exec postgres-container psql -U postgres elicitation_ai -c "\d interview"  # Describe table
+docker exec postgres-container psql -U postgres elicitation_ai -c "SELECT COUNT(*) FROM interview;"  # Count records
+
+# 💾 BACKUP & RESTORE
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup.sql    # Backup
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql    # Restore
+
+# 🔧 TROUBLESHOOTING
+docker logs postgres-container --tail 50                        # PostgreSQL logs
+docker logs svc-elicitation-ai --tail 50 | grep -i database    # App database logs
+docker exec postgres-container pg_isready -U postgres          # Check if PostgreSQL is ready
+```
 
 ---
 

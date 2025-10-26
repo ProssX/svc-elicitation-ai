@@ -4,15 +4,130 @@ Handles all interview-related endpoints
 """
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
-from app.models.interview import StartInterviewRequest, ContinueInterviewRequest, ExportInterviewRequest, InterviewExportData
+from typing import Optional, Literal
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.interview import (
+    StartInterviewRequest, 
+    ContinueInterviewRequest, 
+    ExportInterviewRequest, 
+    InterviewExportData,
+    InterviewFilters,
+    PaginationParams,
+    UpdateInterviewStatusRequest,
+    ExportInterviewFromDBRequest
+)
 from app.models.responses import success_response, error_response
 from app.services.agent_service import get_agent
 from app.services.context_service import get_context_service
+from app.services.interview_service import InterviewService
 from app.middleware.auth_middleware import get_current_user
 from app.services.token_validator import TokenPayload
+from app.database import get_db
+from app.exceptions import InterviewNotFoundError, InterviewAccessDeniedError
+from app.dependencies.permissions import require_permission
+from app.models.permissions import InterviewPermission
+from uuid import UUID
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
+
+
+@router.get("/permissions", response_model=None)
+async def get_permissions():
+    """
+    Get all available interview permissions
+    
+    Returns a list of all available permissions for interview operations.
+    This endpoint is public and does not require authentication.
+    
+    **Authentication Required:** None (public endpoint)
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Permissions retrieved successfully",
+      "data": {
+        "permissions": [
+          {
+            "name": "interviews:create",
+            "description": "Create new interviews and continue existing ones"
+          },
+          {
+            "name": "interviews:read",
+            "description": "Read own interviews"
+          },
+          {
+            "name": "interviews:read_all",
+            "description": "Read all interviews in organization (admin/manager only)"
+          },
+          {
+            "name": "interviews:update",
+            "description": "Update interview status (own interviews only)"
+          },
+          {
+            "name": "interviews:delete",
+            "description": "Delete own interviews (soft delete - future implementation)"
+          },
+          {
+            "name": "interviews:export",
+            "description": "Export interviews to documents (own interviews only)"
+          }
+        ]
+      },
+      "errors": null,
+      "meta": {
+        "total_permissions": 6
+      }
+    }
+    ```
+    
+    **Use Case:**
+    - Frontend can display available permissions to users
+    - Auth service can reference this list when assigning permissions
+    - Documentation for developers integrating with the API
+    """
+    try:
+        # Define permission descriptions
+        permission_descriptions = {
+            InterviewPermission.CREATE: "Create new interviews and continue existing ones",
+            InterviewPermission.READ: "Read own interviews",
+            InterviewPermission.READ_ALL: "Read all interviews in organization (admin/manager only)",
+            InterviewPermission.UPDATE: "Update interview status (own interviews only)",
+            InterviewPermission.DELETE: "Delete own interviews (soft delete - future implementation)",
+            InterviewPermission.EXPORT: "Export interviews to documents (own interviews only)"
+        }
+        
+        # Build permissions list
+        permissions_list = [
+            {
+                "name": permission.value,
+                "description": permission_descriptions[permission]
+            }
+            for permission in InterviewPermission
+        ]
+        
+        return success_response(
+            data={
+                "permissions": permissions_list
+            },
+            message="Permissions retrieved successfully",
+            meta={
+                "total_permissions": len(permissions_list)
+            }
+        )
+        
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in get_permissions:")
+        print(error_detail)
+        return error_response(
+            message="Failed to retrieve permissions",
+            code=500,
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+        )
 
 
 @router.post("/test")
@@ -43,7 +158,9 @@ async def test_interview(
 @router.post("/start", response_model=None)
 async def start_interview(
     request: StartInterviewRequest,
-    current_user: TokenPayload = Depends(get_current_user)
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.CREATE))
 ):
     """
     Start a new interview session
@@ -51,6 +168,8 @@ async def start_interview(
     Creates a new interview session and returns the first question.
     
     **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:create`
     
     **Request Structure:**
     ```json
@@ -66,7 +185,7 @@ async def start_interview(
       "code": 200,
       "message": "Interview started successfully",
       "data": {
-        "session_id": "uuid-string",
+        "interview_id": "uuid-string",
         "question": "Agent's first question in selected language",
         "question_number": 1,
         "is_final": false
@@ -80,10 +199,29 @@ async def start_interview(
     }
     ```
     
+    **Error Responses:**
+    - 401: Missing or invalid authentication token
+    - 403: Insufficient permissions (missing `interviews:create` permission)
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Insufficient permissions",
+        "errors": [
+          {
+            "field": "permissions",
+            "error": "Required permission: interviews:create",
+            "user_permissions": []
+          }
+        ]
+      }
+      ```
+    - 500: Server error
+    
     **⚠️ IMPORTANT for Frontend:**
-    - Save `meta.language` from response to localStorage
-    - Send it in EVERY `/continue` request
-    - Backend is stateless (doesn't remember language between requests)
+    - Save `interview_id` from response data for subsequent requests
+    - Send interview_id in EVERY `/continue` request
+    - Backend persists interview data in PostgreSQL automatically
     
     **Note:** The `context` field (processes_identified, completeness, etc.) 
     has been removed as it's only used internally by the agent.
@@ -98,7 +236,7 @@ async def start_interview(
         # Get agent
         agent = get_agent()
         
-        # Start interview with language support
+        # Start interview with language support (maintain existing logic)
         interview_response = agent.start_interview(
             user_name=user_context.get("name", "Usuario"),
             user_role=user_context.get("role", "Empleado"),
@@ -107,12 +245,18 @@ async def start_interview(
             language=request.language
         )
         
-        # Generate session ID
-        session_id = str(uuid.uuid4())
+        # Persist interview in database (NEW)
+        interview_service = InterviewService(db)
+        interview, first_message = await interview_service.start_interview(
+            employee_id=UUID(current_user.user_id),
+            language=request.language,
+            technical_level=user_context.get("technical_level", "unknown"),
+            first_question=interview_response.question
+        )
         
-        # Prepare response data (simplified, no internal context exposed)
+        # Prepare response data with interview_id from database
         data = {
-            "session_id": session_id,
+            "interview_id": str(interview.id_interview),  # NEW: Return database interview_id
             "question": interview_response.question,
             "question_number": interview_response.question_number,
             "is_final": interview_response.is_final
@@ -143,7 +287,9 @@ async def start_interview(
 @router.post("/continue", response_model=None)
 async def continue_interview(
     request: ContinueInterviewRequest,
-    current_user: TokenPayload = Depends(get_current_user)
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.CREATE))
 ):
     """
     Continue an ongoing interview
@@ -152,14 +298,20 @@ async def continue_interview(
     
     **Authentication Required:** Bearer token in Authorization header
     
-    **⚠️ IMPORTANT:** The `language` parameter is REQUIRED in each request 
-    because the backend is stateless (doesn't store session data). 
-    It must be sent to ensure the agent responds in the correct language.
+    **Required Permission:** `interviews:create`
+    
+    **Authorization:**
+    - User must own the interview (employee_id matches user_id from JWT)
+    - Users with `interviews:read_all` permission can continue any interview in their organization
+    
+    **⚠️ IMPORTANT:** The `interview_id` parameter is REQUIRED for database persistence.
+    The `language` parameter is also REQUIRED because the backend is stateless.
     
     **Request Structure:**
     ```json
     {
-      "session_id": "uuid-string",
+      "interview_id": "uuid-string",  // ⚠️ REQUIRED: From database
+      "session_id": "uuid-string",    // Legacy field for compatibility
       "user_response": "User's answer to previous question",
       "conversation_history": [...],
       "language": "es"  // ⚠️ REQUIRED: es|en|pt
@@ -180,20 +332,120 @@ async def continue_interview(
       },
       "errors": null,
       "meta": {
+        "interview_id": "uuid-string",
         "session_id": "uuid-string",
         "question_count": 2,
-        "language": "es"  // Same as request
+        "language": "es"
       }
     }
     ```
     
-    **Why `language` in every request?**
-    - Backend is stateless (no session storage)
-    - Ensures agent uses correct language for system prompt
-    - Maintains conversation consistency
-    - If omitted, defaults to "es" (may break multi-language conversations)
+    **Database Persistence:**
+    - User response is saved to database before generating next question
+    - Agent's next question is also saved to database
+    - Interview updated_at timestamp is updated
+    - If is_final=true, interview status is marked as completed
+    
+    **Error Responses:**
+    - 400: Invalid interview_id format or missing required fields
+    - 401: Missing or invalid authentication token
+    - 403: Insufficient permissions or attempting to continue another user's interview
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Access denied",
+        "errors": [
+          {
+            "field": "interview_id",
+            "error": "You don't have permission to continue this interview"
+          }
+        ]
+      }
+      ```
+    - 404: Interview not found
+    - 500: Server error
     """
     try:
+        # Validate interview_id is provided
+        if not request.interview_id:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "interview_id", "error": "Interview ID is required"}]
+            )
+        
+        # Validate interview_id format
+        try:
+            interview_uuid = UUID(request.interview_id)
+        except ValueError:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "interview_id", "error": "Invalid UUID format"}]
+            )
+        
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Validate ownership: Check if interview belongs to user OR user has read_all permission
+        interview = await interview_service.interview_repo.get_by_id(
+            interview_uuid, 
+            UUID(current_user.user_id)
+        )
+        
+        # If interview not found, check if it exists at all (for proper error message)
+        if not interview:
+            # Check if user has read_all permission (admins can continue any interview)
+            if current_user.has_permission(InterviewPermission.READ_ALL):
+                # Admin with read_all can access any interview, try without employee_id filter
+                from sqlalchemy import select
+                from app.models.db_models import Interview as InterviewModel
+                
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                result = await db.execute(stmt)
+                interview = result.scalar_one_or_none()
+                
+                if not interview:
+                    return error_response(
+                        message="Interview not found",
+                        code=404,
+                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                    )
+                # Admin has access, continue with the interview
+            else:
+                # Regular user without read_all permission
+                # Check if interview exists at all
+                from sqlalchemy import select
+                from app.models.db_models import Interview as InterviewModel
+                
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                result = await db.execute(stmt)
+                exists = result.scalar_one_or_none() is not None
+                
+                if not exists:
+                    return error_response(
+                        message="Interview not found",
+                        code=404,
+                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                    )
+                else:
+                    # Interview exists but doesn't belong to user
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"User {current_user.user_id} attempted to continue interview "
+                        f"{request.interview_id} that belongs to another user"
+                    )
+                    return error_response(
+                        message="Access denied",
+                        code=403,
+                        errors=[{
+                            "field": "interview_id",
+                            "error": "You don't have permission to continue this interview"
+                        }]
+                    )
+        
         # Get context service
         context_service = get_context_service()
         
@@ -203,7 +455,7 @@ async def continue_interview(
         # Get agent
         agent = get_agent()
         
-        # Continue interview with language support
+        # Continue interview with language support (maintain existing logic)
         interview_response = agent.continue_interview(
             user_response=request.user_response,
             conversation_history=request.conversation_history,
@@ -213,6 +465,33 @@ async def continue_interview(
             technical_level=user_context.get("technical_level", "unknown"),
             language=request.language
         )
+        
+        # Persist in database
+        try:
+            interview, user_message, agent_message = await interview_service.continue_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(current_user.user_id) if not current_user.has_permission(InterviewPermission.READ_ALL) else UUID(str(interview.employee_id)),
+                user_response=request.user_response,
+                agent_question=interview_response.question,
+                is_final=interview_response.is_final
+            )
+        except ValueError as ve:
+            # Handle interview not found or access denied
+            error_msg = str(ve)
+            if "not found" in error_msg.lower():
+                return error_response(
+                    message="Interview not found",
+                    code=404,
+                    errors=[{"field": "interview_id", "error": error_msg}]
+                )
+            elif "access denied" in error_msg.lower():
+                return error_response(
+                    message="Access denied",
+                    code=403,
+                    errors=[{"field": "interview_id", "error": error_msg}]
+                )
+            else:
+                raise ve
         
         # Prepare response data (simplified, no internal context exposed)
         data = {
@@ -226,29 +505,659 @@ async def continue_interview(
             data=data,
             message="Question generated successfully",
             meta={
-                "session_id": request.session_id,
+                "interview_id": request.interview_id,  # Include interview_id from database
+                "session_id": request.session_id,      # Keep for compatibility
                 "question_count": interview_response.question_number,
-                "language": request.language  # Include language for persistence
+                "language": request.language
             }
         )
         
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in continue_interview:")
+        print(error_detail)
         return error_response(
             message="Failed to continue interview",
             code=500,
-            errors=[{"field": "general", "error": str(e)}]
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+        )
+
+
+@router.get("", response_model=None)
+async def list_interviews(
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.READ)),
+    status: Optional[Literal["in_progress", "completed", "cancelled"]] = Query(
+        None, 
+        description="Filter by interview status"
+    ),
+    language: Optional[Literal["es", "en", "pt"]] = Query(
+        None, 
+        description="Filter by interview language"
+    ),
+    start_date: Optional[datetime] = Query(
+        None, 
+        description="Filter interviews started after this date (ISO format)"
+    ),
+    end_date: Optional[datetime] = Query(
+        None, 
+        description="Filter interviews started before this date (ISO format)"
+    ),
+    page: int = Query(
+        1, 
+        ge=1, 
+        description="Page number (1-indexed)"
+    ),
+    page_size: int = Query(
+        20, 
+        ge=1, 
+        le=100, 
+        description="Number of items per page (max 100)"
+    )
+):
+    """
+    List interviews for the authenticated employee
+    
+    Retrieves a paginated list of interviews with optional filtering.
+    
+    **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:read`
+    
+    **Query Parameters:**
+    - status: Filter by interview status (in_progress, completed, cancelled)
+    - language: Filter by interview language (es, en, pt)
+    - start_date: Filter interviews started after this date (ISO format)
+    - end_date: Filter interviews started before this date (ISO format)
+    - page: Page number (default: 1, min: 1)
+    - page_size: Items per page (default: 20, min: 1, max: 100)
+    
+    **Authorization:**
+    - Users with `interviews:read` can only see their own interviews
+    - Users with `interviews:read_all` can see all interviews in their organization
+    - Results are automatically filtered based on permission scope
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Interviews retrieved successfully",
+      "data": [
+        {
+          "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+          "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+          "language": "es",
+          "technical_level": "intermediate",
+          "status": "completed",
+          "started_at": "2025-10-25T10:00:00Z",
+          "completed_at": "2025-10-25T10:15:00Z",
+          "total_messages": 12
+        }
+      ],
+      "errors": null,
+      "meta": {
+        "pagination": {
+          "total_items": 45,
+          "total_pages": 3,
+          "current_page": 1,
+          "page_size": 20
+        },
+        "filters": {
+          "status": "completed",
+          "language": "es",
+          "start_date": "2025-10-01T00:00:00Z",
+          "end_date": "2025-10-31T23:59:59Z"
+        },
+        "scope": "own",
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef"
+      }
+    }
+    ```
+    
+    **Example Requests:**
+    - GET /interviews - All interviews for user (page 1, 20 items)
+    - GET /interviews?status=completed - Only completed interviews
+    - GET /interviews?language=es&page=2 - Spanish interviews, page 2
+    - GET /interviews?start_date=2025-10-01T00:00:00Z - Interviews from October 2025
+    - GET /interviews?page_size=50 - 50 items per page
+    
+    **Error Responses:**
+    - 400: Invalid query parameters (e.g., invalid date format, page < 1)
+    - 403: Insufficient permissions (missing `interviews:read` permission)
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Insufficient permissions",
+        "errors": [
+          {
+            "field": "permissions",
+            "error": "Required permission: interviews:read",
+            "user_permissions": []
+          }
+        ]
+      }
+      ```
+    - 500: Database error
+    """
+    try:
+        # Create filter and pagination objects
+        filters = InterviewFilters(
+            status=status,
+            language=language,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        pagination = PaginationParams(
+            page=page,
+            page_size=page_size
+        )
+        
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Determine scope based on permissions
+        # Users with interviews:read_all can see all interviews in organization
+        # Users with only interviews:read can only see their own
+        has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
+        scope = "organization" if has_read_all else "own"
+        
+        # Get interviews with filters and pagination
+        interviews, pagination_meta = await interview_service.list_interviews(
+            employee_id=UUID(current_user.user_id),
+            filters=filters,
+            pagination=pagination,
+            organization_id=current_user.organization_id if has_read_all else None,
+            scope=scope
+        )
+        
+        # Convert to dict for response
+        interviews_data = [interview.model_dump() for interview in interviews]
+        
+        return success_response(
+            data=interviews_data,
+            message="Interviews retrieved successfully",
+            meta={
+                "pagination": pagination_meta.model_dump(),
+                "filters": {
+                    "status": status,
+                    "language": language,
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None
+                },
+                "scope": scope,
+                "employee_id": current_user.user_id
+            }
+        )
+        
+    except ValueError as ve:
+        # Handle validation errors (e.g., invalid date format)
+        return error_response(
+            message="Validation error",
+            code=400,
+            errors=[{"field": "query_params", "error": str(ve)}]
+        )
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in list_interviews:")
+        print(error_detail)
+        return error_response(
+            message="Failed to retrieve interviews",
+            code=500,
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+        )
+
+
+@router.get("/{interview_id}", response_model=None)
+async def get_interview(
+    interview_id: str,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.READ))
+):
+    """
+    Get a specific interview with full message history
+    
+    Retrieves a complete interview including all messages ordered by sequence number.
+    
+    **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:read`
+    
+    **Path Parameters:**
+    - interview_id: UUID of the interview to retrieve
+    
+    **Authorization:**
+    - Users with `interviews:read` can only access their own interviews
+    - Users with `interviews:read_all` can access any interview in their organization
+    - Returns 404 if interview doesn't exist (to avoid revealing existence)
+    - Returns 403 if interview exists but user doesn't have access
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Interview retrieved successfully",
+      "data": {
+        "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+        "language": "es",
+        "technical_level": "intermediate",
+        "status": "in_progress",
+        "started_at": "2025-10-25T10:00:00Z",
+        "completed_at": null,
+        "total_messages": 4,
+        "messages": [
+          {
+            "id_message": "018e5f8b-2a78-7890-b123-456789abcdef",
+            "role": "assistant",
+            "content": "¿Cuál es tu rol en la organización?",
+            "sequence_number": 1,
+            "created_at": "2025-10-25T10:00:00Z"
+          },
+          {
+            "id_message": "018e5f8b-3b89-7890-c234-567890abcdef",
+            "role": "user",
+            "content": "Soy gerente de operaciones",
+            "sequence_number": 2,
+            "created_at": "2025-10-25T10:01:00Z"
+          }
+        ]
+      },
+      "errors": null,
+      "meta": {
+        "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef"
+      }
+    }
+    ```
+    
+    **Error Responses:**
+    - 400: Invalid interview_id format
+    - 401: Missing or invalid authentication token
+    - 403: Insufficient permissions or access denied to interview
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Insufficient permissions",
+        "errors": [
+          {
+            "field": "permissions",
+            "error": "Required permission: interviews:read",
+            "user_permissions": []
+          }
+        ]
+      }
+      ```
+    - 404: Interview not found (returned even if interview exists but user lacks access, to avoid revealing existence)
+    - 500: Database error
+    """
+    try:
+        # Validate interview_id format
+        try:
+            interview_uuid = UUID(interview_id)
+        except ValueError:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "interview_id", "error": "Invalid UUID format"}]
+            )
+        
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Check if user has read_all permission (admins can see any interview)
+        has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
+        
+        if has_read_all:
+            # Admin with read_all can access any interview, try without employee_id filter
+            from sqlalchemy import select
+            from app.models.db_models import Interview as InterviewModel
+            
+            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+            result = await db.execute(stmt)
+            interview = result.scalar_one_or_none()
+            
+            if not interview:
+                return error_response(
+                    message="Interview not found",
+                    code=404,
+                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                )
+            
+            # Get full interview with messages for admin
+            interview_with_messages = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(str(interview.employee_id))  # Use actual owner's ID
+            )
+        else:
+            # Regular user - validate ownership
+            interview_with_messages = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(current_user.user_id)
+            )
+            
+            # If not found, check if interview exists at all (for proper error message)
+            if not interview_with_messages:
+                from sqlalchemy import select
+                from app.models.db_models import Interview as InterviewModel
+                
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                result = await db.execute(stmt)
+                exists = result.scalar_one_or_none() is not None
+                
+                if exists:
+                    # Interview exists but doesn't belong to user - return 404 to avoid revealing existence
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"User {current_user.user_id} attempted to access interview "
+                        f"{interview_id} that belongs to another user"
+                    )
+                
+                # Return 404 in both cases (doesn't exist OR no access)
+                return error_response(
+                    message="Interview not found",
+                    code=404,
+                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                )
+        
+        return success_response(
+            data=interview_with_messages.model_dump(),
+            message="Interview retrieved successfully",
+            meta={
+                "interview_id": interview_id,
+                "employee_id": current_user.user_id
+            }
+        )
+        
+    except InterviewNotFoundError as e:
+        return error_response(
+            message="Interview not found",
+            code=404,
+            errors=[{"field": "interview_id", "error": str(e)}]
+        )
+    except InterviewAccessDeniedError as e:
+        # Return 404 instead of 403 to avoid revealing interview existence
+        return error_response(
+            message="Interview not found",
+            code=404,
+            errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+        )
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in get_interview:")
+        print(error_detail)
+        return error_response(
+            message="Failed to retrieve interview",
+            code=500,
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+        )
+
+
+@router.patch("/{interview_id}", response_model=None)
+async def update_interview_status(
+    interview_id: str,
+    request: UpdateInterviewStatusRequest,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.UPDATE))
+):
+    """
+    Update interview status
+    
+    Updates the status of an existing interview. Currently only supports updating the status field.
+    
+    **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:update`
+    
+    **Path Parameters:**
+    - interview_id: UUID of the interview to update
+    
+    **Request Structure:**
+    ```json
+    {
+      "status": "completed"  // in_progress | completed | cancelled
+    }
+    ```
+    
+    **Authorization:**
+    - User must own the interview (employee_id matches user_id from JWT)
+    - Users with `interviews:read_all` permission can update any interview in their organization
+    - Returns 403 if trying to update another employee's interview without proper permissions
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Interview status updated successfully",
+      "data": {
+        "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+        "language": "es",
+        "technical_level": "intermediate",
+        "status": "completed",
+        "started_at": "2025-10-25T10:00:00Z",
+        "completed_at": "2025-10-25T10:15:00Z",
+        "total_messages": 8
+      },
+      "errors": null,
+      "meta": {
+        "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+        "updated_fields": ["status", "completed_at"]
+      }
+    }
+    ```
+    
+    **Business Rules:**
+    - When status is changed to "completed", completed_at is automatically set to current timestamp
+    - When status is changed from "completed" to other status, completed_at is set to null
+    - updated_at timestamp is always updated
+    
+    **Error Responses:**
+    - 400: Invalid interview_id format or invalid status value
+    - 401: Missing or invalid authentication token
+    - 403: Insufficient permissions or access denied
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Insufficient permissions",
+        "errors": [
+          {
+            "field": "permissions",
+            "error": "Required permission: interviews:update",
+            "user_permissions": []
+          }
+        ]
+      }
+      ```
+    - 404: Interview not found
+    - 500: Database error
+    """
+    try:
+        # Validate interview_id format
+        try:
+            interview_uuid = UUID(interview_id)
+        except ValueError:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "interview_id", "error": "Invalid UUID format"}]
+            )
+        
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Check if user has read_all permission (admins can update any interview)
+        has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
+        
+        if has_read_all:
+            # Admin with read_all can update any interview, try without employee_id filter
+            from sqlalchemy import select
+            from app.models.db_models import Interview as InterviewModel
+            
+            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+            result = await db.execute(stmt)
+            existing_interview_model = result.scalar_one_or_none()
+            
+            if not existing_interview_model:
+                return error_response(
+                    message="Interview not found",
+                    code=404,
+                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                )
+            
+            # Get full interview with messages for admin
+            existing_interview = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(str(existing_interview_model.employee_id))
+            )
+        else:
+            # Regular user - validate ownership
+            existing_interview = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(current_user.user_id)
+            )
+            
+            # If not found, check if interview exists at all (for proper error message)
+            if not existing_interview:
+                from sqlalchemy import select
+                from app.models.db_models import Interview as InterviewModel
+                
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                result = await db.execute(stmt)
+                exists = result.scalar_one_or_none() is not None
+                
+                if not exists:
+                    return error_response(
+                        message="Interview not found",
+                        code=404,
+                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                    )
+                else:
+                    # Interview exists but doesn't belong to user
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"User {current_user.user_id} attempted to update interview "
+                        f"{interview_id} that belongs to another user"
+                    )
+                    return error_response(
+                        message="Access denied",
+                        code=403,
+                        errors=[{
+                            "field": "interview_id",
+                            "error": "You don't have permission to update this interview"
+                        }]
+                    )
+        
+        if not existing_interview:
+            raise InterviewNotFoundError(interview_id)
+        
+        # Update the interview status using repository
+        interview_repo = interview_service.interview_repo
+        updated_interview = await interview_repo.update_status(
+            interview_id=interview_uuid,
+            status=request.status
+        )
+        
+        # Log the update with user_id
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Interview {interview_id} status updated to '{request.status}' by user {current_user.user_id}"
+        )
+        
+        # Get message count for response
+        message_count = await interview_service.message_repo.count_by_interview(interview_uuid)
+        
+        # Prepare response data
+        response_data = {
+            "id_interview": str(updated_interview.id_interview),
+            "employee_id": str(updated_interview.employee_id),
+            "language": updated_interview.language.value,
+            "technical_level": updated_interview.technical_level,
+            "status": updated_interview.status.value,
+            "started_at": updated_interview.started_at,
+            "completed_at": updated_interview.completed_at,
+            "total_messages": message_count
+        }
+        
+        # Determine which fields were updated
+        updated_fields = ["status", "updated_at"]
+        if request.status == "completed" and not existing_interview.completed_at:
+            updated_fields.append("completed_at")
+        elif request.status != "completed" and existing_interview.completed_at:
+            updated_fields.append("completed_at")
+        
+        return success_response(
+            data=response_data,
+            message="Interview status updated successfully",
+            meta={
+                "interview_id": interview_id,
+                "employee_id": current_user.user_id,
+                "updated_fields": updated_fields
+            }
+        )
+        
+    except InterviewNotFoundError as e:
+        return error_response(
+            message="Interview not found",
+            code=404,
+            errors=[{"field": "interview_id", "error": str(e)}]
+        )
+    except InterviewAccessDeniedError as e:
+        return error_response(
+            message="Access denied",
+            code=403,
+            errors=[{"field": "interview_id", "error": str(e)}]
+        )
+    except ValueError as ve:
+        # Handle validation errors (e.g., invalid status value)
+        return error_response(
+            message="Validation error",
+            code=400,
+            errors=[{"field": "status", "error": str(ve)}]
+        )
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in update_interview_status:")
+        print(error_detail)
+        return error_response(
+            message="Failed to update interview status",
+            code=500,
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
         )
 
 
 @router.post("/export", response_model=None)
 async def export_interview(
-    request: ExportInterviewRequest,
-    current_user: TokenPayload = Depends(get_current_user)
+    request: ExportInterviewFromDBRequest,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.EXPORT))
 ):
     """
-    Export raw interview data (NO AI analysis)
+    Export raw interview data from database (NO AI analysis)
+    
+    **UPDATED:** Now retrieves interview data from database instead of request body.
     
     **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:export`
     
     **Design Principle**: This endpoint ONLY exports the raw conversation data.
     It does NOT perform any AI analysis or process extraction.
@@ -256,21 +1165,19 @@ async def export_interview(
     **Request Structure:**
     ```json
     {
-      "session_id": "uuid-string",
-      "conversation_history": [...],  // Complete conversation from localStorage
-      "language": "es"  // Interview language
+      "interview_id": "018e5f8b-1234-7890-abcd-123456789abc"
     }
     ```
     
     **Separation of Concerns**:
-    - This service: Conducts interviews + Exports raw data
+    - This service: Conducts interviews + Exports raw data from DB
     - Another service (future): Analyzes data + Extracts processes + Generates BPMN
     
     **What this returns**:
-    - ✅ Full conversation history (questions + answers)
-    - ✅ User info (name, role, organization)
-    - ✅ Interview metrics (total questions, duration)
-    - ✅ Timestamps and session info
+    - ✅ Full conversation history (questions + answers) from database
+    - ✅ User info (name, role, organization) from context service
+    - ✅ Interview metrics (total questions, duration) calculated from DB data
+    - ✅ Timestamps and interview info from database
     - ❌ NO completeness_score (internal metric, removed)
     - ❌ NO process extraction (done by another service)
     
@@ -281,79 +1188,221 @@ async def export_interview(
       "code": 200,
       "message": "Interview data exported successfully",
       "data": {
-        "session_id": "uuid",
+        "session_id": null,
         "user_name": "Juan Pérez",
         "conversation_history": [...],
         "total_questions": 8,
         "total_user_responses": 8,
-        "is_complete": true
+        "is_complete": true,
+        "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+        "interview_date": "2025-10-25T10:00:00Z",
+        "interview_duration_minutes": 15
       },
       "errors": null,
       "meta": {
-        "session_id": "uuid",
-        "export_date": "2025-10-08T...",
-        "language": "es",  // ⚠️ Language in meta (consistent with other endpoints)
-        "technical_level": "non-technical"
+        "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+        "export_date": "2025-10-25T15:30:00Z",
+        "language": "es",
+        "technical_level": "intermediate",
+        "data_source": "database"
       }
     }
     ```
     
+    **Authorization:**
+    - User must own the interview (employee_id matches user_id from JWT)
+    - Users with `interviews:read_all` permission can export any interview in their organization
+    - Returns 403 if trying to export another employee's interview without proper permissions
+    
+    **Error Responses:**
+    - 400: Invalid interview_id format
+    - 401: Missing or invalid authentication token
+    - 403: Insufficient permissions or access denied
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Insufficient permissions",
+        "errors": [
+          {
+            "field": "permissions",
+            "error": "Required permission: interviews:export",
+            "user_permissions": []
+          }
+        ]
+      }
+      ```
+    - 404: Interview not found
+    - 500: Database error
+    
     **Use case**: 
-    - Frontend calls this when interview is complete (is_final=true)
-    - Backend PHP persists raw data to PostgreSQL
-    - Another microservice analyzes it later for BPMN generation
+    - Frontend calls this when user wants to export completed interview
+    - Backend retrieves complete interview data from PostgreSQL
+    - Another microservice can analyze exported data for BPMN generation
     """
     try:
-        # Get context service
-        context_service = get_context_service()
+        # Validate interview_id format
+        try:
+            interview_uuid = UUID(request.interview_id)
+        except ValueError:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "interview_id", "error": "Invalid UUID format"}]
+            )
         
-        # Get user context using authenticated user_id from token
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Check if user has read_all permission (admins can export any interview)
+        has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
+        
+        if has_read_all:
+            # Admin with read_all can export any interview, try without employee_id filter
+            from sqlalchemy import select
+            from app.models.db_models import Interview as InterviewModel
+            
+            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+            result = await db.execute(stmt)
+            interview_model = result.scalar_one_or_none()
+            
+            if not interview_model:
+                return error_response(
+                    message="Interview not found",
+                    code=404,
+                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                )
+            
+            # Get full interview with messages for admin
+            interview_with_messages = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(str(interview_model.employee_id))
+            )
+        else:
+            # Regular user - validate ownership
+            interview_with_messages = await interview_service.get_interview(
+                interview_id=interview_uuid,
+                employee_id=UUID(current_user.user_id)
+            )
+            
+            # If not found, check if interview exists at all (for proper error message)
+            if not interview_with_messages:
+                from sqlalchemy import select
+                from app.models.db_models import Interview as InterviewModel
+                
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                result = await db.execute(stmt)
+                exists = result.scalar_one_or_none() is not None
+                
+                if not exists:
+                    return error_response(
+                        message="Interview not found",
+                        code=404,
+                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+                    )
+                else:
+                    # Interview exists but doesn't belong to user
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"User {current_user.user_id} attempted to export interview "
+                        f"{request.interview_id} that belongs to another user"
+                    )
+                    return error_response(
+                        message="Access denied",
+                        code=403,
+                        errors=[{
+                            "field": "interview_id",
+                            "error": "You don't have permission to export this interview"
+                        }]
+                    )
+        
+        # Handle not found
+        if not interview_with_messages:
+            raise InterviewNotFoundError(request.interview_id)
+        
+        # Get context service for user info
+        context_service = get_context_service()
         user_context = await context_service.get_user_context(current_user.user_id)
         
-        # Calculate metrics from conversation_history
-        total_questions = len([m for m in request.conversation_history if m.role == "assistant"])
-        total_user_responses = len([m for m in request.conversation_history if m.role == "user"])
+        # Convert database messages to conversation history format
+        conversation_history = []
+        for msg in interview_with_messages.messages:
+            conversation_history.append({
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.created_at
+            })
         
-        # Calculate duration if timestamps available
+        # Calculate metrics from database data
+        total_questions = len([m for m in interview_with_messages.messages if m.role == "assistant"])
+        total_user_responses = len([m for m in interview_with_messages.messages if m.role == "user"])
+        
+        # Calculate duration from database timestamps
         interview_duration_minutes = None
-        if request.conversation_history and len(request.conversation_history) >= 2:
-            first_msg = request.conversation_history[0]
-            last_msg = request.conversation_history[-1]
-            if first_msg.timestamp and last_msg.timestamp:
-                duration = (last_msg.timestamp - first_msg.timestamp).total_seconds() / 60
-                interview_duration_minutes = int(duration)
+        if interview_with_messages.completed_at and interview_with_messages.started_at:
+            duration = (interview_with_messages.completed_at - interview_with_messages.started_at).total_seconds() / 60
+            interview_duration_minutes = int(duration)
         
-        # Create export data
+        # Create export data (modified to include interview_id and use DB data)
         export_data = InterviewExportData(
-            session_id=request.session_id,
-            user_id=current_user.user_id,  # From authenticated token
+            session_id=None,  # No session_id for DB-persisted interviews
+            user_id=current_user.user_id,
             user_name=user_context.get("name", "Usuario"),
             user_role=user_context.get("role", "Empleado"),
             organization=user_context.get("organization", "Organización"),
-            interview_date=datetime.now(),
+            interview_date=interview_with_messages.started_at,
             interview_duration_minutes=interview_duration_minutes,
             total_questions=total_questions,
             total_user_responses=total_user_responses,
-            is_complete=True,  # Assume complete if exporting
-            conversation_history=request.conversation_history
+            is_complete=(interview_with_messages.status == "completed"),
+            conversation_history=conversation_history
+        )
+        
+        # Add interview_id to export data (extend the model data)
+        export_dict = export_data.model_dump()
+        export_dict["interview_id"] = request.interview_id
+        
+        # Log the export with timestamp and user_id
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Interview {request.interview_id} exported by user {current_user.user_id} "
+            f"at {datetime.utcnow().isoformat()}"
         )
         
         return success_response(
-            data=export_data.model_dump(),
-            message="Interview data exported successfully (raw data only)",
+            data=export_dict,
+            message="Interview data exported successfully (from database)",
             meta={
-                "session_id": request.session_id,
-                "export_date": datetime.now().isoformat(),
-                "language": request.language,  # ✅ Language in meta (consistent)
-                "technical_level": user_context.get("technical_level", "unknown"),
-                "note": "This is raw data. Process extraction should be done by a separate service."
+                "interview_id": request.interview_id,
+                "export_date": datetime.utcnow().isoformat(),
+                "language": interview_with_messages.language,
+                "technical_level": interview_with_messages.technical_level,
+                "data_source": "database"
             }
         )
         
+    except InterviewNotFoundError as e:
+        return error_response(
+            message="Interview not found",
+            code=404,
+            errors=[{"field": "interview_id", "error": str(e)}]
+        )
+    except InterviewAccessDeniedError as e:
+        return error_response(
+            message="Access denied",
+            code=403,
+            errors=[{"field": "interview_id", "error": str(e)}]
+        )
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] Exception in export_interview:")
+        print(error_detail)
         return error_response(
             message="Failed to export interview data",
             code=500,
-            errors=[{"field": "general", "error": str(e)}]
+            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
         )
 

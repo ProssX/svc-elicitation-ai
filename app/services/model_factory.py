@@ -24,14 +24,19 @@ def create_model():
     elif settings.model_provider == "openai":
         # OpenAI model
         from strands.models.openai import OpenAIModel
+        import httpx
         
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when using OpenAI provider")
+        
+        # Create httpx client with SSL verification disabled (for development only)
+        http_client = httpx.AsyncClient(verify=False)
         
         return OpenAIModel(
             api_key=settings.openai_api_key,
             model_id=settings.openai_model,
             temperature=0.7,
+            http_client=http_client
         )
     else:
         raise ValueError(f"Unknown model provider: {settings.model_provider}")

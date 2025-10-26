@@ -198,7 +198,9 @@ class InterviewService:
         self,
         employee_id: UUID,
         filters: InterviewFilters,
-        pagination: PaginationParams
+        pagination: PaginationParams,
+        organization_id: Optional[str] = None,
+        scope: str = "own"
     ) -> Tuple[List[InterviewDBResponse], PaginationMeta]:
         """
         List interviews with filters and pagination
@@ -207,20 +209,33 @@ class InterviewService:
             employee_id: Employee UUID
             filters: Filter parameters (status, language, dates)
             pagination: Pagination parameters (page, page_size)
+            organization_id: Organization ID for organization-wide queries (optional)
+            scope: Query scope - "own" for employee's interviews, "organization" for all
             
         Returns:
             Tuple of (list of InterviewDBResponse, PaginationMeta)
         """
-        # Get interviews from repository
-        interviews, total_count = await self.interview_repo.get_by_employee(
-            employee_id=employee_id,
-            status=filters.status,
-            language=filters.language,
-            start_date=filters.start_date,
-            end_date=filters.end_date,
-            page=pagination.page,
-            page_size=pagination.page_size
-        )
+        # Get interviews from repository based on scope
+        if scope == "organization" and organization_id:
+            interviews, total_count = await self.interview_repo.get_by_organization(
+                organization_id=organization_id,
+                status=filters.status,
+                language=filters.language,
+                start_date=filters.start_date,
+                end_date=filters.end_date,
+                page=pagination.page,
+                page_size=pagination.page_size
+            )
+        else:
+            interviews, total_count = await self.interview_repo.get_by_employee(
+                employee_id=employee_id,
+                status=filters.status,
+                language=filters.language,
+                start_date=filters.start_date,
+                end_date=filters.end_date,
+                page=pagination.page,
+                page_size=pagination.page_size
+            )
         
         # Convert to response models
         interview_responses = []
@@ -251,69 +266,3 @@ class InterviewService:
         )
         
         return interview_responses, pagination_meta
-    
-    async def migrate_from_localstorage(
-        self,
-        employee_id: UUID,
-        session_id: str,
-        conversation_history: List[ConversationMessage],
-        language: str
-    ) -> Interview:
-        """
-        Migrate interview from localStorage to database
-        
-        Args:
-            employee_id: Employee UUID
-            session_id: Original session ID from localStorage
-            conversation_history: Complete conversation history
-            language: Interview language
-            
-        Returns:
-            Created Interview
-            
-        Raises:
-            ValueError: If interview with same session_id already exists
-        """
-        # Validate that employee exists
-        user_context = await self.context_service.get_user_context(str(employee_id))
-        if not user_context or not user_context.get("id"):
-            raise ValueError(f"Employee with ID {employee_id} not found")
-        
-        # Check if interview with this session_id already exists
-        # We'll use a simple approach: check if any interview has a message with session_id in content
-        # For a more robust solution, we could add a session_id field to Interview model
-        # For now, we'll just create the interview (duplicate check can be added later if needed)
-        
-        # Determine interview status based on conversation
-        is_completed = False
-        if conversation_history:
-            # Check if last message indicates completion
-            # This is a simple heuristic - adjust based on actual requirements
-            is_completed = len(conversation_history) > 5  # Assume completed if more than 5 messages
-        
-        # Create Interview record
-        interview = Interview(
-            employee_id=employee_id,
-            language=LanguageEnum(language),
-            technical_level="unknown",  # Not available from localStorage
-            status=InterviewStatusEnum.COMPLETED if is_completed else InterviewStatusEnum.IN_PROGRESS,
-            started_at=conversation_history[0].timestamp if conversation_history and conversation_history[0].timestamp else datetime.utcnow(),
-            completed_at=conversation_history[-1].timestamp if is_completed and conversation_history and conversation_history[-1].timestamp else None
-        )
-        interview = await self.interview_repo.create(interview)
-        
-        # Create messages from conversation history
-        for idx, msg in enumerate(conversation_history, start=1):
-            message = InterviewMessage(
-                interview_id=interview.id_interview,
-                role=MessageRoleEnum(msg.role),
-                content=msg.content,
-                sequence_number=idx,
-                created_at=msg.timestamp if msg.timestamp else datetime.utcnow()
-            )
-            await self.message_repo.create(message)
-        
-        await self.db.flush()
-        await self.db.refresh(interview)
-        
-        return interview
