@@ -116,6 +116,11 @@ class JWKSClient:
                 
                 jwks_data = response.json()
                 
+                # Handle standard API response format (data wrapper)
+                # Auth service returns: {"status": "success", "data": {"keys": [...]}}
+                if "data" in jwks_data and isinstance(jwks_data["data"], dict):
+                    jwks_data = jwks_data["data"]
+                
                 # Validate JWKS format
                 if "keys" not in jwks_data:
                     raise JWKSFetchError("Invalid JWKS format: missing 'keys' field")
