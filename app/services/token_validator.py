@@ -64,6 +64,42 @@ class TokenPayload:
     permissions: list[str]
     issued_at: int
     expires_at: int
+    
+    def has_permission(self, permission: str) -> bool:
+        """
+        Check if user has a specific permission
+        
+        Args:
+            permission: Permission string to check (e.g., "interviews:create")
+            
+        Returns:
+            bool: True if user has the permission, False otherwise
+        """
+        return permission in self.permissions
+    
+    def has_any_permission(self, permissions: list[str]) -> bool:
+        """
+        Check if user has any of the specified permissions (OR logic)
+        
+        Args:
+            permissions: List of permission strings to check
+            
+        Returns:
+            bool: True if user has at least one of the permissions, False otherwise
+        """
+        return any(perm in self.permissions for perm in permissions)
+    
+    def has_all_permissions(self, permissions: list[str]) -> bool:
+        """
+        Check if user has all of the specified permissions (AND logic)
+        
+        Args:
+            permissions: List of permission strings to check
+            
+        Returns:
+            bool: True if user has all of the permissions, False otherwise
+        """
+        return all(perm in self.permissions for perm in permissions)
 
 
 class TokenValidator:
@@ -211,6 +247,8 @@ class TokenValidator:
         Raises:
             KeyError: If required claims are missing
         """
+        from app.models.permissions import InterviewPermission
+        
         # Extract required claims
         user_id = payload["sub"]
         organization_id = payload.get("organizationId")
@@ -230,9 +268,42 @@ class TokenValidator:
         
         # Extract permissions (default to empty list if not present)
         permissions = payload.get("permissions", [])
+        
+        # Validate permissions format
         if not isinstance(permissions, list):
-            logger.warning(f"Invalid permissions format, expected list: {permissions}")
+            logger.warning(
+                f"Invalid permissions format in JWT for user {user_id}: "
+                f"expected list, got {type(permissions).__name__}"
+            )
             permissions = []
+        
+        # Log warning if JWT doesn't contain permissions field
+        if "permissions" not in payload:
+            logger.warning(
+                f"JWT for user {user_id} does not contain 'permissions' field. "
+                f"Assuming empty permissions array."
+            )
+        
+        # Filter out invalid permissions using InterviewPermission.is_valid()
+        valid_permissions = []
+        invalid_permissions = []
+        
+        for perm in permissions:
+            if not isinstance(perm, str):
+                invalid_permissions.append(perm)
+                continue
+            
+            if InterviewPermission.is_valid(perm):
+                valid_permissions.append(perm)
+            else:
+                invalid_permissions.append(perm)
+        
+        # Log warning if invalid permissions were found
+        if invalid_permissions:
+            logger.warning(
+                f"JWT for user {user_id} contains invalid permissions: {invalid_permissions}. "
+                f"Valid permissions: {valid_permissions}"
+            )
         
         # Extract timestamps
         issued_at = payload["iat"]
@@ -243,7 +314,7 @@ class TokenValidator:
             organization_id=organization_id,
             email=email,
             roles=roles,
-            permissions=permissions,
+            permissions=valid_permissions,
             issued_at=issued_at,
             expires_at=expires_at
         )

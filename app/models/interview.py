@@ -1,9 +1,10 @@
 """
 Interview Domain Models
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional, Literal, Any
 from datetime import datetime
+from uuid import UUID
 
 
 class ConversationMessage(BaseModel):
@@ -92,7 +93,8 @@ class StartInterviewRequest(BaseModel):
 
 class ContinueInterviewRequest(BaseModel):
     """Request to continue an ongoing interview"""
-    session_id: str = Field(description="Interview session ID")
+    interview_id: str = Field(description="Interview ID from database (required for persistence)")
+    session_id: str = Field(description="Interview session ID (legacy, for compatibility)")
     user_response: str = Field(description="User's response to the previous question")
     conversation_history: List[ConversationMessage] = Field(
         description="Full conversation history (stateless)"
@@ -105,6 +107,7 @@ class ContinueInterviewRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
                 "session_id": "550e8400-e29b-41d4-a716-446655440000",
                 "user_response": "Soy responsable del proceso de aprobación de compras",
                 "conversation_history": [
@@ -220,3 +223,192 @@ class InterviewExportData(BaseModel):
             }
         }
 
+
+
+# ============================================================================
+# Database Persistence Models (NEW)
+# ============================================================================
+
+class InterviewCreate(BaseModel):
+    """Request model for creating a new interview"""
+    language: str = Field(default="es", pattern="^(es|en|pt)$", description="Interview language")
+    technical_level: str = Field(default="unknown", description="User's technical level")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "language": "es",
+                "technical_level": "intermediate"
+            }
+        }
+
+
+class MessageResponse(BaseModel):
+    """Response model for individual interview messages"""
+    id_message: str = Field(description="Message UUID")
+    role: Literal["assistant", "user", "system"] = Field(description="Message role")
+    content: str = Field(description="Message content")
+    sequence_number: int = Field(description="Message sequence number in conversation")
+    created_at: datetime = Field(description="Message creation timestamp")
+    
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id_message": "018e5f8b-2a78-7890-b123-456789abcdef",
+                "role": "assistant",
+                "content": "¿Cuál es tu rol en la organización?",
+                "sequence_number": 1,
+                "created_at": "2025-10-25T10:30:00Z"
+            }
+        }
+
+
+class InterviewDBResponse(BaseModel):
+    """Response model for basic interview information from database"""
+    id_interview: str = Field(description="Interview UUID")
+    employee_id: str = Field(description="Employee UUID")
+    language: str = Field(description="Interview language")
+    technical_level: str = Field(description="User's technical level")
+    status: str = Field(description="Interview status (in_progress, completed, cancelled)")
+    started_at: datetime = Field(description="Interview start timestamp")
+    completed_at: Optional[datetime] = Field(default=None, description="Interview completion timestamp")
+    total_messages: int = Field(description="Total number of messages in the interview")
+    
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+                "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+                "language": "es",
+                "technical_level": "intermediate",
+                "status": "in_progress",
+                "started_at": "2025-10-25T10:00:00Z",
+                "completed_at": None,
+                "total_messages": 5
+            }
+        }
+
+
+class InterviewWithMessages(InterviewDBResponse):
+    """Response model for detailed interview with full message history"""
+    messages: List[MessageResponse] = Field(default_factory=list, description="Ordered list of interview messages")
+    
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+                "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+                "language": "es",
+                "technical_level": "intermediate",
+                "status": "in_progress",
+                "started_at": "2025-10-25T10:00:00Z",
+                "completed_at": None,
+                "total_messages": 2,
+                "messages": [
+                    {
+                        "id_message": "018e5f8b-2a78-7890-b123-456789abcdef",
+                        "role": "assistant",
+                        "content": "¿Cuál es tu rol?",
+                        "sequence_number": 1,
+                        "created_at": "2025-10-25T10:00:00Z"
+                    },
+                    {
+                        "id_message": "018e5f8b-3b89-7890-c234-567890abcdef",
+                        "role": "user",
+                        "content": "Soy gerente de operaciones",
+                        "sequence_number": 2,
+                        "created_at": "2025-10-25T10:01:00Z"
+                    }
+                ]
+            }
+        }
+
+
+class InterviewFilters(BaseModel):
+    """Query parameters for filtering interviews"""
+    status: Optional[Literal["in_progress", "completed", "cancelled"]] = Field(
+        default=None,
+        description="Filter by interview status"
+    )
+    language: Optional[Literal["es", "en", "pt"]] = Field(
+        default=None,
+        description="Filter by interview language"
+    )
+    start_date: Optional[datetime] = Field(
+        default=None,
+        description="Filter interviews started after this date"
+    )
+    end_date: Optional[datetime] = Field(
+        default=None,
+        description="Filter interviews started before this date"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "completed",
+                "language": "es",
+                "start_date": "2025-10-01T00:00:00Z",
+                "end_date": "2025-10-31T23:59:59Z"
+            }
+        }
+
+
+class PaginationParams(BaseModel):
+    """Query parameters for pagination"""
+    page: int = Field(default=1, ge=1, description="Page number (1-indexed)")
+    page_size: int = Field(default=20, ge=1, le=100, description="Number of items per page (max 100)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "page": 1,
+                "page_size": 20
+            }
+        }
+
+
+class PaginationMeta(BaseModel):
+    """Metadata for paginated responses"""
+    total_items: int = Field(description="Total number of items across all pages")
+    total_pages: int = Field(description="Total number of pages")
+    current_page: int = Field(description="Current page number")
+    page_size: int = Field(description="Number of items per page")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_items": 45,
+                "total_pages": 3,
+                "current_page": 1,
+                "page_size": 20
+            }
+        }
+
+
+class UpdateInterviewStatusRequest(BaseModel):
+    """Request model for updating interview status"""
+    status: Literal["in_progress", "completed", "cancelled"] = Field(
+        description="New interview status"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "completed"
+            }
+        }
+
+class ExportInterviewFromDBRequest(BaseModel):
+    """Request model for exporting interview data from database"""
+    interview_id: str = Field(description="Interview UUID to export")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "interview_id": "018e5f8b-1234-7890-abcd-123456789abc"
+            }
+        }
