@@ -22,25 +22,27 @@ else:
 
 
 # Enums for type safety
+# IMPORTANT: Enum names must match database values exactly
+# PostgreSQL enum values are: 'es', 'en', 'pt' (lowercase)
 class LanguageEnum(str, enum.Enum):
     """Supported interview languages"""
-    ES = "es"
-    EN = "en"
-    PT = "pt"
+    es = "es"
+    en = "en"
+    pt = "pt"
 
 
 class InterviewStatusEnum(str, enum.Enum):
     """Interview status states"""
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
 
 
 class MessageRoleEnum(str, enum.Enum):
     """Message role types"""
-    ASSISTANT = "assistant"
-    USER = "user"
-    SYSTEM = "system"
+    assistant = "assistant"
+    user = "user"
+    system = "system"
 
 
 class Interview(Base):
@@ -74,7 +76,7 @@ class Interview(Base):
     
     # Interview Metadata
     language = Column(
-        SQLEnum(LanguageEnum, name="language_enum", create_type=True),
+        SQLEnum(LanguageEnum, name="language_enum", create_type=False),
         nullable=False,
         comment="Interview language (es/en/pt)"
     )
@@ -87,9 +89,9 @@ class Interview(Base):
     )
     
     status = Column(
-        SQLEnum(InterviewStatusEnum, name="interview_status_enum", create_type=True),
+        SQLEnum(InterviewStatusEnum, name="interview_status_enum", create_type=False),
         nullable=False,
-        default=InterviewStatusEnum.IN_PROGRESS,
+        default=InterviewStatusEnum.in_progress,  # Use lowercase enum name
         index=True,
         comment="Current interview status"
     )
@@ -167,7 +169,7 @@ class InterviewMessage(Base):
     
     # Message Data
     role = Column(
-        SQLEnum(MessageRoleEnum, name="message_role_enum", create_type=True),
+        SQLEnum(MessageRoleEnum, name="message_role_enum", create_type=False),
         nullable=False,
         comment="Message role (assistant/user/system)"
     )

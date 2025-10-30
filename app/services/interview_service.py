@@ -65,11 +65,19 @@ class InterviewService:
             raise ValueError(f"Employee with ID {employee_id} not found")
         
         # Create Interview record
+        # Normalize language to lowercase to match enum values
+        language_lower = language.lower()
+        
+        # Validate language
+        if language_lower not in ["es", "en", "pt"]:
+            raise ValueError(f"Invalid language: {language}. Must be one of: es, en, pt")
+        
+        # Pass string values directly to match PostgreSQL enum values
         interview = Interview(
             employee_id=employee_id,
-            language=LanguageEnum(language),
+            language=language_lower,  # Pass string directly: "es", "en", or "pt"
             technical_level=technical_level,
-            status=InterviewStatusEnum.IN_PROGRESS,
+            status=InterviewStatusEnum.in_progress,  # Use lowercase enum name
             started_at=datetime.utcnow()
         )
         interview = await self.interview_repo.create(interview)
@@ -77,7 +85,7 @@ class InterviewService:
         # Create first message (assistant role, sequence 1)
         first_message = InterviewMessage(
             interview_id=interview.id_interview,
-            role=MessageRoleEnum.ASSISTANT,
+            role=MessageRoleEnum.assistant,  # Use lowercase enum name
             content=first_question,
             sequence_number=1
         )
@@ -120,7 +128,7 @@ class InterviewService:
         # Create user message (sequence_number + 1)
         user_message = InterviewMessage(
             interview_id=interview_id,
-            role=MessageRoleEnum.USER,
+            role=MessageRoleEnum.user,  # Use lowercase enum name
             content=user_response,
             sequence_number=last_sequence + 1
         )
@@ -129,7 +137,7 @@ class InterviewService:
         # Create agent message (sequence_number + 2)
         agent_message = InterviewMessage(
             interview_id=interview_id,
-            role=MessageRoleEnum.ASSISTANT,
+            role=MessageRoleEnum.assistant,  # Use lowercase enum name
             content=agent_question,
             sequence_number=last_sequence + 2
         )
