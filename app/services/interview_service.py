@@ -22,6 +22,44 @@ from app.repositories.message_repository import MessageRepository
 from app.services.context_service import get_context_service
 
 
+def convert_messages_to_conversation_history(
+    messages: List[InterviewMessage]
+) -> List[ConversationMessage]:
+    """
+    Convert database messages to conversation history format
+    
+    This helper function transforms InterviewMessage objects from the database
+    into ConversationMessage objects that can be passed to the agent.
+    
+    Args:
+        messages: List of InterviewMessage objects from database
+        
+    Returns:
+        List of ConversationMessage objects for agent consumption
+        
+    Example:
+        >>> db_messages = await message_repo.get_by_interview(interview_id)
+        >>> conversation_history = convert_messages_to_conversation_history(db_messages)
+        >>> agent.continue_interview(user_response, conversation_history, ...)
+    """
+    # Handle empty message list gracefully
+    if not messages:
+        return []
+    
+    # Convert each database message to conversation format
+    conversation_history = []
+    for msg in messages:
+        conversation_history.append(
+            ConversationMessage(
+                role=msg.role.value,  # Convert enum to string ("user" or "assistant")
+                content=msg.content,
+                timestamp=msg.created_at
+            )
+        )
+    
+    return conversation_history
+
+
 class InterviewService:
     """Service for interview business logic and persistence"""
     
@@ -82,6 +120,9 @@ class InterviewService:
         )
         interview = await self.interview_repo.create(interview)
         
+        # Ensure interview is persisted before creating first message
+        await self.db.flush()
+        
         # Create first message (assistant role, sequence 1)
         first_message = InterviewMessage(
             interview_id=interview.id_interview,
@@ -122,6 +163,9 @@ class InterviewService:
         if not interview:
             raise ValueError(f"Interview {interview_id} not found or access denied")
         
+        # Ensure previous query completes before getting sequence number
+        await self.db.flush()
+        
         # Get last sequence number
         last_sequence = await self.message_repo.get_last_sequence(interview_id)
         
@@ -133,6 +177,9 @@ class InterviewService:
             sequence_number=last_sequence + 1
         )
         user_message = await self.message_repo.create(user_message)
+        
+        # Ensure user message is persisted before creating agent message
+        await self.db.flush()
         
         # Create agent message (sequence_number + 2)
         agent_message = InterviewMessage(
@@ -158,22 +205,47 @@ class InterviewService:
     async def get_interview(
         self,
         interview_id: UUID,
-        employee_id: UUID
-    ) -> Optional[InterviewWithMessages]:
+        employee_id: UUID,
+        allow_cross_user: bool = False
+    ) -> InterviewWithMessages:
         """
         Get interview with full message history
         
         Args:
             interview_id: Interview UUID
             employee_id: Employee UUID (for authorization)
+            allow_cross_user: If True, skip employee_id validation (for admin access)
             
         Returns:
-            InterviewWithMessages or None if not found
+            InterviewWithMessages
+            
+        Raises:
+            InterviewNotFoundError: When interview doesn't exist
+            InterviewAccessDeniedError: When user lacks permission
         """
-        # Get interview with messages (repository already validates employee_id)
+        from app.exceptions import InterviewNotFoundError, InterviewAccessDeniedError
+        
+        # Get interview with messages (repository validates employee_id)
         interview = await self.interview_repo.get_by_id(interview_id, employee_id)
+        
         if not interview:
-            return None
+            # Check if interview exists at all (without employee_id filter)
+            if allow_cross_user:
+                # Try to get interview without employee_id validation
+                interview = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if not interview:
+                    raise InterviewNotFoundError(interview_id)
+            else:
+                # Could be either not found or access denied
+                # Check if interview exists without employee filter
+                interview_exists = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if interview_exists:
+                    raise InterviewAccessDeniedError(interview_id, employee_id)
+                else:
+                    raise InterviewNotFoundError(interview_id)
+        
+        # Ensure previous query completes before fetching messages
+        await self.db.flush()
         
         # Get messages ordered by sequence_number
         messages = await self.message_repo.get_by_interview(interview_id)
@@ -200,6 +272,137 @@ class InterviewService:
             completed_at=interview.completed_at,
             total_messages=len(messages),
             messages=message_responses
+        )
+    
+    async def get_interview_summary(
+        self,
+        interview_id: UUID,
+        employee_id: UUID,
+        allow_cross_user: bool = False
+    ) -> InterviewDBResponse:
+        """
+        Get interview summary without messages
+        
+        Args:
+            interview_id: Interview UUID
+            employee_id: Employee UUID (for authorization)
+            allow_cross_user: If True, skip employee_id validation (for admin access)
+            
+        Returns:
+            InterviewDBResponse with basic interview data
+            
+        Raises:
+            InterviewNotFoundError: When interview doesn't exist
+            InterviewAccessDeniedError: When user lacks permission
+        """
+        from app.exceptions import InterviewNotFoundError, InterviewAccessDeniedError
+        
+        # Get interview (repository validates employee_id)
+        interview = await self.interview_repo.get_by_id(interview_id, employee_id)
+        
+        if not interview:
+            # Check if interview exists at all (without employee_id filter)
+            if allow_cross_user:
+                # Try to get interview without employee_id validation
+                interview = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if not interview:
+                    raise InterviewNotFoundError(interview_id)
+            else:
+                # Could be either not found or access denied
+                # Check if interview exists without employee filter
+                interview_exists = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if interview_exists:
+                    raise InterviewAccessDeniedError(interview_id, employee_id)
+                else:
+                    raise InterviewNotFoundError(interview_id)
+        
+        # Ensure previous query completes before counting messages
+        await self.db.flush()
+        
+        # Count messages for the interview
+        message_count = await self.message_repo.count_by_interview(interview_id)
+        
+        return InterviewDBResponse(
+            id_interview=str(interview.id_interview),
+            employee_id=str(interview.employee_id),
+            language=interview.language.value,
+            technical_level=interview.technical_level,
+            status=interview.status.value,
+            started_at=interview.started_at,
+            completed_at=interview.completed_at,
+            total_messages=message_count
+        )
+    
+    async def update_interview_status(
+        self,
+        interview_id: UUID,
+        employee_id: UUID,
+        new_status: InterviewStatusEnum,
+        allow_cross_user: bool = False
+    ) -> InterviewDBResponse:
+        """
+        Update interview status
+        
+        Args:
+            interview_id: Interview UUID
+            employee_id: Employee UUID (for authorization)
+            new_status: New status value
+            allow_cross_user: If True, skip employee_id validation (for admin access)
+            
+        Returns:
+            InterviewDBResponse with updated interview data
+            
+        Raises:
+            InterviewNotFoundError: When interview doesn't exist
+            InterviewAccessDeniedError: When user lacks permission
+        """
+        from app.exceptions import InterviewNotFoundError, InterviewAccessDeniedError
+        
+        # Validate interview existence and ownership
+        interview = await self.interview_repo.get_by_id(interview_id, employee_id)
+        
+        if not interview:
+            # Check if interview exists at all (without employee_id filter)
+            if allow_cross_user:
+                # Try to get interview without employee_id validation
+                interview = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if not interview:
+                    raise InterviewNotFoundError(interview_id)
+            else:
+                # Could be either not found or access denied
+                # Check if interview exists without employee filter
+                interview_exists = await self.interview_repo.get_by_id_no_filter(interview_id)
+                if interview_exists:
+                    raise InterviewAccessDeniedError(interview_id, employee_id)
+                else:
+                    raise InterviewNotFoundError(interview_id)
+        
+        # Update status
+        interview.status = new_status
+        interview.updated_at = datetime.utcnow()
+        
+        # If marking as completed, set completed_at timestamp
+        if new_status == InterviewStatusEnum.completed:
+            interview.completed_at = datetime.utcnow()
+        
+        await self.db.flush()
+        await self.db.refresh(interview)
+        
+        # Ensure previous operations complete before counting messages
+        await self.db.flush()
+        
+        # Count messages for the interview
+        message_count = await self.message_repo.count_by_interview(interview_id)
+        
+        return InterviewDBResponse(
+            id_interview=str(interview.id_interview),
+            employee_id=str(interview.employee_id),
+            language=interview.language.value,
+            technical_level=interview.technical_level,
+            status=interview.status.value,
+            started_at=interview.started_at,
+            completed_at=interview.completed_at,
+            total_messages=message_count
         )
     
     async def list_interviews(
@@ -244,6 +447,9 @@ class InterviewService:
                 page=pagination.page,
                 page_size=pagination.page_size
             )
+        
+        # Ensure previous query completes before processing interviews
+        await self.db.flush()
         
         # Convert to response models
         interview_responses = []

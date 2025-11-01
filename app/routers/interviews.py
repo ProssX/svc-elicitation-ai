@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, Literal
 from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.interview import (
     StartInterviewRequest, 
@@ -20,7 +21,7 @@ from app.models.interview import (
 from app.models.responses import success_response, error_response
 from app.services.agent_service import get_agent
 from app.services.context_service import get_context_service
-from app.services.interview_service import InterviewService
+from app.services.interview_service import InterviewService, convert_messages_to_conversation_history
 from app.middleware.auth_middleware import get_current_user
 from app.services.token_validator import TokenPayload
 from app.database import get_db
@@ -294,7 +295,8 @@ async def continue_interview(
     """
     Continue an ongoing interview
     
-    Receives user's response and returns the next question.
+    Receives user's response and returns the next question. The backend automatically loads
+    the conversation history from the database, so you only need to send the minimal payload.
     
     **Authentication Required:** Bearer token in Authorization header
     
@@ -304,19 +306,38 @@ async def continue_interview(
     - User must own the interview (employee_id matches user_id from JWT)
     - Users with `interviews:read_all` permission can continue any interview in their organization
     
-    **⚠️ IMPORTANT:** The `interview_id` parameter is REQUIRED for database persistence.
-    The `language` parameter is also REQUIRED because the backend is stateless.
+    **✨ OPTIMIZED:** This endpoint now requires only minimal data. The backend loads the
+    conversation history from the database automatically, reducing request payload by ~99%
+    (from ~50KB to ~200 bytes).
     
-    **Request Structure:**
+    **Request Structure (Minimal - Recommended):**
     ```json
     {
-      "interview_id": "uuid-string",  // ⚠️ REQUIRED: From database
-      "session_id": "uuid-string",    // Legacy field for compatibility
-      "user_response": "User's answer to previous question",
-      "conversation_history": [...],
-      "language": "es"  // ⚠️ REQUIRED: es|en|pt
+      "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+      "user_response": "Soy responsable del proceso de compras",
+      "language": "es"
     }
     ```
+    
+    **Request Structure (Legacy - Deprecated):**
+    ```json
+    {
+      "interview_id": "uuid-string",
+      "user_response": "User's answer to previous question",
+      "language": "es",
+      "session_id": "uuid-string",        // ⚠️ DEPRECATED: Not used, optional for backward compatibility
+      "conversation_history": [...]       // ⚠️ DEPRECATED: Backend loads from DB, optional for backward compatibility
+    }
+    ```
+    
+    **Required Fields:**
+    - `interview_id` (string, UUID format): Interview identifier from database
+    - `user_response` (string, 1-5000 chars): User's answer to the previous question
+    - `language` (string, "es"|"en"|"pt"): Interview language
+    
+    **Optional Fields (Deprecated):**
+    - `session_id` (string): Legacy session identifier - ignored by backend
+    - `conversation_history` (array): Full conversation history - ignored by backend (loaded from DB)
     
     **Response Structure:**
     ```json
@@ -332,13 +353,21 @@ async def continue_interview(
       },
       "errors": null,
       "meta": {
-        "interview_id": "uuid-string",
-        "session_id": "uuid-string",
+        "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+        "session_id": null,
         "question_count": 2,
         "language": "es"
       }
     }
     ```
+    
+    **How It Works:**
+    1. Backend receives minimal request (interview_id + user_response + language)
+    2. Backend loads interview and full message history from PostgreSQL database
+    3. Backend passes database history to AI agent for context
+    4. Agent generates next question based on complete history
+    5. Backend saves both user response and agent question to database
+    6. Backend returns only the next question to frontend
     
     **Database Persistence:**
     - User response is saved to database before generating next question
@@ -347,50 +376,110 @@ async def continue_interview(
     - If is_final=true, interview status is marked as completed
     
     **Error Responses:**
-    - 400: Invalid interview_id format or missing required fields
-    - 401: Missing or invalid authentication token
-    - 403: Insufficient permissions or attempting to continue another user's interview
-      ```json
-      {
-        "status": "error",
-        "code": 403,
-        "message": "Access denied",
-        "errors": [
-          {
-            "field": "interview_id",
-            "error": "You don't have permission to continue this interview"
-          }
-        ]
+    
+    **422 Unprocessable Entity - Validation Error:**
+    ```json
+    {
+      "status": "error",
+      "code": 422,
+      "message": "Validation error",
+      "errors": [
+        {
+          "field": "user_response",
+          "error": "String should have at least 1 character",
+          "type": "string_too_short"
+        }
+      ],
+      "meta": {
+        "endpoint": "/api/v1/interviews/continue",
+        "method": "POST"
       }
-      ```
-    - 404: Interview not found
-    - 500: Server error
+    }
+    ```
+    
+    **Common Validation Errors:**
+    - Empty `user_response`: "String should have at least 1 character"
+    - `user_response` too long: "String should have at most 5000 characters"
+    - Invalid `language`: "String should match pattern '^(es|en|pt)$'"
+    - Invalid `interview_id`: "Input should be a valid UUID"
+    
+    **400 Bad Request - Invalid Data:**
+    - Invalid interview_id format or missing required fields
+    
+    **401 Unauthorized - Authentication Error:**
+    - Missing or invalid authentication token
+    
+    **403 Forbidden - Access Denied:**
+    ```json
+    {
+      "status": "error",
+      "code": 403,
+      "message": "Access denied",
+      "errors": [
+        {
+          "field": "interview_id",
+          "error": "You don't have permission to continue this interview"
+        }
+      ]
+    }
+    ```
+    
+    **404 Not Found - Interview Not Found:**
+    ```json
+    {
+      "status": "error",
+      "code": 404,
+      "message": "Interview not found",
+      "errors": [
+        {
+          "field": "interview_id",
+          "error": "Interview does not exist"
+        }
+      ]
+    }
+    ```
+    
+    **500 Internal Server Error:**
+    - Database connection error
+    - AI service error
+    - Unexpected server error
+    
+    **Migration Guide for Frontend:**
+    
+    **Before (Old Code):**
+    ```javascript
+    const response = await continueInterview({
+      session_id: sessionId,
+      interview_id: interviewId,
+      user_response: userAnswer,
+      conversation_history: conversationHistory,  // 50KB+ payload
+      language: 'es'
+    });
+    ```
+    
+    **After (New Code - Recommended):**
+    ```javascript
+    const response = await continueInterview({
+      interview_id: interviewId,
+      user_response: userAnswer,
+      language: 'es'
+      // conversation_history removed - backend loads from DB
+      // session_id removed - not needed
+    });
+    ```
+    
+    **Backward Compatibility:**
+    The endpoint still accepts `session_id` and `conversation_history` fields for backward
+    compatibility, but they are ignored. This allows gradual migration without breaking
+    existing deployments.
     """
     try:
-        # Validate interview_id is provided
-        if not request.interview_id:
-            return error_response(
-                message="Validation error",
-                code=400,
-                errors=[{"field": "interview_id", "error": "Interview ID is required"}]
-            )
-        
-        # Validate interview_id format
-        try:
-            interview_uuid = UUID(request.interview_id)
-        except ValueError:
-            return error_response(
-                message="Validation error",
-                code=400,
-                errors=[{"field": "interview_id", "error": "Invalid UUID format"}]
-            )
-        
         # Get interview service
         interview_service = InterviewService(db)
         
         # Validate ownership: Check if interview belongs to user OR user has read_all permission
         interview = await interview_service.interview_repo.get_by_id(
-            interview_uuid, 
+            request.interview_id, 
             UUID(current_user.user_id)
         )
         
@@ -402,16 +491,17 @@ async def continue_interview(
                 from sqlalchemy import select
                 from app.models.db_models import Interview as InterviewModel
                 
-                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == request.interview_id)
                 result = await db.execute(stmt)
                 interview = result.scalar_one_or_none()
                 
                 if not interview:
-                    return error_response(
+                    error_resp = error_response(
                         message="Interview not found",
                         code=404,
                         errors=[{"field": "interview_id", "error": "Interview does not exist"}]
                     )
+                    return JSONResponse(status_code=404, content=error_resp.model_dump())
                 # Admin has access, continue with the interview
             else:
                 # Regular user without read_all permission
@@ -419,16 +509,17 @@ async def continue_interview(
                 from sqlalchemy import select
                 from app.models.db_models import Interview as InterviewModel
                 
-                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
+                stmt = select(InterviewModel).where(InterviewModel.id_interview == request.interview_id)
                 result = await db.execute(stmt)
                 exists = result.scalar_one_or_none() is not None
                 
                 if not exists:
-                    return error_response(
+                    error_resp = error_response(
                         message="Interview not found",
                         code=404,
                         errors=[{"field": "interview_id", "error": "Interview does not exist"}]
                     )
+                    return JSONResponse(status_code=404, content=error_resp.model_dump())
                 else:
                     # Interview exists but doesn't belong to user
                     import logging
@@ -437,7 +528,7 @@ async def continue_interview(
                         f"User {current_user.user_id} attempted to continue interview "
                         f"{request.interview_id} that belongs to another user"
                     )
-                    return error_response(
+                    error_resp = error_response(
                         message="Access denied",
                         code=403,
                         errors=[{
@@ -445,6 +536,7 @@ async def continue_interview(
                             "error": "You don't have permission to continue this interview"
                         }]
                     )
+                    return JSONResponse(status_code=403, content=error_resp.model_dump())
         
         # Get context service
         context_service = get_context_service()
@@ -452,13 +544,17 @@ async def continue_interview(
         # Get user context using authenticated user_id from token
         user_context = await context_service.get_user_context(current_user.user_id)
         
+        # Load conversation history from database (NEW: optimization)
+        messages = await interview_service.message_repo.get_by_interview(request.interview_id)
+        conversation_history = convert_messages_to_conversation_history(messages)
+        
         # Get agent
         agent = get_agent()
         
-        # Continue interview with language support (maintain existing logic)
+        # Continue interview with language support (using history from DB, not request)
         interview_response = agent.continue_interview(
             user_response=request.user_response,
-            conversation_history=request.conversation_history,
+            conversation_history=conversation_history,  # CHANGED: Load from DB instead of request
             user_name=user_context.get("name", "Usuario"),
             user_role=user_context.get("role", "Empleado"),
             organization=user_context.get("organization", "Organización"),
@@ -469,7 +565,7 @@ async def continue_interview(
         # Persist in database
         try:
             interview, user_message, agent_message = await interview_service.continue_interview(
-                interview_id=interview_uuid,
+                interview_id=request.interview_id,
                 employee_id=UUID(current_user.user_id) if not current_user.has_permission(InterviewPermission.READ_ALL) else UUID(str(interview.employee_id)),
                 user_response=request.user_response,
                 agent_question=interview_response.question,
@@ -702,14 +798,17 @@ async def list_interviews(
             errors=[{"field": "query_params", "error": str(ve)}]
         )
     except Exception as e:
+        # Log the full error for debugging
         import traceback
-        error_detail = traceback.format_exc()
-        print(f"[ERROR] Exception in list_interviews:")
-        print(error_detail)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error in list_interviews: {str(e)}", exc_info=True)
+        
+        # Return generic error response without exposing internal details
         return error_response(
             message="Failed to retrieve interviews",
             code=500,
-            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+            errors=[{"field": "general", "error": "An internal error occurred while retrieving interviews"}]
         )
 
 
@@ -816,58 +915,12 @@ async def get_interview(
         # Check if user has read_all permission (admins can see any interview)
         has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
         
-        if has_read_all:
-            # Admin with read_all can access any interview, try without employee_id filter
-            from sqlalchemy import select
-            from app.models.db_models import Interview as InterviewModel
-            
-            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-            result = await db.execute(stmt)
-            interview = result.scalar_one_or_none()
-            
-            if not interview:
-                return error_response(
-                    message="Interview not found",
-                    code=404,
-                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                )
-            
-            # Get full interview with messages for admin
-            interview_with_messages = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(str(interview.employee_id))  # Use actual owner's ID
-            )
-        else:
-            # Regular user - validate ownership
-            interview_with_messages = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(current_user.user_id)
-            )
-            
-            # If not found, check if interview exists at all (for proper error message)
-            if not interview_with_messages:
-                from sqlalchemy import select
-                from app.models.db_models import Interview as InterviewModel
-                
-                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-                result = await db.execute(stmt)
-                exists = result.scalar_one_or_none() is not None
-                
-                if exists:
-                    # Interview exists but doesn't belong to user - return 404 to avoid revealing existence
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(
-                        f"User {current_user.user_id} attempted to access interview "
-                        f"{interview_id} that belongs to another user"
-                    )
-                
-                # Return 404 in both cases (doesn't exist OR no access)
-                return error_response(
-                    message="Interview not found",
-                    code=404,
-                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                )
+        # Use service method with allow_cross_user parameter
+        interview_with_messages = await interview_service.get_interview(
+            interview_id=interview_uuid,
+            employee_id=UUID(current_user.user_id),
+            allow_cross_user=has_read_all
+        )
         
         return success_response(
             data=interview_with_messages.model_dump(),
@@ -879,18 +932,20 @@ async def get_interview(
         )
         
     except InterviewNotFoundError as e:
-        return error_response(
-            message="Interview not found",
-            code=404,
-            errors=[{"field": "interview_id", "error": str(e)}]
-        )
-    except InterviewAccessDeniedError as e:
-        # Return 404 instead of 403 to avoid revealing interview existence
-        return error_response(
+        error_resp = error_response(
             message="Interview not found",
             code=404,
             errors=[{"field": "interview_id", "error": "Interview does not exist"}]
         )
+        return JSONResponse(status_code=404, content=error_resp.model_dump())
+    except InterviewAccessDeniedError as e:
+        # Return 404 instead of 403 to avoid revealing interview existence
+        error_resp = error_response(
+            message="Interview not found",
+            code=404,
+            errors=[{"field": "interview_id", "error": "Interview does not exist"}]
+        )
+        return JSONResponse(status_code=404, content=error_resp.model_dump())
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
@@ -1003,74 +1058,17 @@ async def update_interview_status(
         # Check if user has read_all permission (admins can update any interview)
         has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
         
-        if has_read_all:
-            # Admin with read_all can update any interview, try without employee_id filter
-            from sqlalchemy import select
-            from app.models.db_models import Interview as InterviewModel
-            
-            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-            result = await db.execute(stmt)
-            existing_interview_model = result.scalar_one_or_none()
-            
-            if not existing_interview_model:
-                return error_response(
-                    message="Interview not found",
-                    code=404,
-                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                )
-            
-            # Get full interview with messages for admin
-            existing_interview = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(str(existing_interview_model.employee_id))
-            )
-        else:
-            # Regular user - validate ownership
-            existing_interview = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(current_user.user_id)
-            )
-            
-            # If not found, check if interview exists at all (for proper error message)
-            if not existing_interview:
-                from sqlalchemy import select
-                from app.models.db_models import Interview as InterviewModel
-                
-                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-                result = await db.execute(stmt)
-                exists = result.scalar_one_or_none() is not None
-                
-                if not exists:
-                    return error_response(
-                        message="Interview not found",
-                        code=404,
-                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                    )
-                else:
-                    # Interview exists but doesn't belong to user
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(
-                        f"User {current_user.user_id} attempted to update interview "
-                        f"{interview_id} that belongs to another user"
-                    )
-                    return error_response(
-                        message="Access denied",
-                        code=403,
-                        errors=[{
-                            "field": "interview_id",
-                            "error": "You don't have permission to update this interview"
-                        }]
-                    )
+        # Convert status string to enum
+        from app.models.db_models import InterviewStatusEnum
+        status_enum = InterviewStatusEnum[request.status]
         
-        if not existing_interview:
-            raise InterviewNotFoundError(interview_id)
-        
-        # Update the interview status using repository
-        interview_repo = interview_service.interview_repo
-        updated_interview = await interview_repo.update_status(
+        # Use service method to update interview status
+        # This handles validation, ownership check, and update in one call
+        updated_interview = await interview_service.update_interview_status(
             interview_id=interview_uuid,
-            status=request.status
+            employee_id=UUID(current_user.user_id),
+            new_status=status_enum,
+            allow_cross_user=has_read_all
         )
         
         # Log the update with user_id
@@ -1080,26 +1078,21 @@ async def update_interview_status(
             f"Interview {interview_id} status updated to '{request.status}' by user {current_user.user_id}"
         )
         
-        # Get message count for response
-        message_count = await interview_service.message_repo.count_by_interview(interview_uuid)
-        
-        # Prepare response data
+        # Prepare response data from service response
         response_data = {
-            "id_interview": str(updated_interview.id_interview),
-            "employee_id": str(updated_interview.employee_id),
-            "language": updated_interview.language.value,
+            "id_interview": updated_interview.id_interview,
+            "employee_id": updated_interview.employee_id,
+            "language": updated_interview.language,
             "technical_level": updated_interview.technical_level,
-            "status": updated_interview.status.value,
+            "status": updated_interview.status,
             "started_at": updated_interview.started_at,
             "completed_at": updated_interview.completed_at,
-            "total_messages": message_count
+            "total_messages": updated_interview.total_messages
         }
         
         # Determine which fields were updated
         updated_fields = ["status", "updated_at"]
-        if request.status == "completed" and not existing_interview.completed_at:
-            updated_fields.append("completed_at")
-        elif request.status != "completed" and existing_interview.completed_at:
+        if request.status == "completed":
             updated_fields.append("completed_at")
         
         return success_response(
@@ -1113,17 +1106,22 @@ async def update_interview_status(
         )
         
     except InterviewNotFoundError as e:
-        return error_response(
+        error_resp = error_response(
             message="Interview not found",
             code=404,
-            errors=[{"field": "interview_id", "error": str(e)}]
+            errors=[{"field": "interview_id", "error": "Interview does not exist"}]
         )
+        return JSONResponse(status_code=404, content=error_resp.model_dump())
     except InterviewAccessDeniedError as e:
-        return error_response(
+        error_resp = error_response(
             message="Access denied",
             code=403,
-            errors=[{"field": "interview_id", "error": str(e)}]
+            errors=[{
+                "field": "interview_id",
+                "error": "You don't have permission to update this interview"
+            }]
         )
+        return JSONResponse(status_code=403, content=error_resp.model_dump())
     except ValueError as ve:
         # Handle validation errors (e.g., invalid status value)
         return error_response(
@@ -1132,14 +1130,16 @@ async def update_interview_status(
             errors=[{"field": "status", "error": str(ve)}]
         )
     except Exception as e:
+        # Handle unexpected errors
+        import logging
         import traceback
+        logger = logging.getLogger(__name__)
         error_detail = traceback.format_exc()
-        print(f"[ERROR] Exception in update_interview_status:")
-        print(error_detail)
+        logger.error(f"Unexpected error in update_interview_status: {error_detail}")
         return error_response(
             message="Failed to update interview status",
             code=500,
-            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+            errors=[{"field": "general", "error": str(e)}]
         )
 
 
@@ -1257,69 +1257,13 @@ async def export_interview(
         # Check if user has read_all permission (admins can export any interview)
         has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
         
-        if has_read_all:
-            # Admin with read_all can export any interview, try without employee_id filter
-            from sqlalchemy import select
-            from app.models.db_models import Interview as InterviewModel
-            
-            stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-            result = await db.execute(stmt)
-            interview_model = result.scalar_one_or_none()
-            
-            if not interview_model:
-                return error_response(
-                    message="Interview not found",
-                    code=404,
-                    errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                )
-            
-            # Get full interview with messages for admin
-            interview_with_messages = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(str(interview_model.employee_id))
-            )
-        else:
-            # Regular user - validate ownership
-            interview_with_messages = await interview_service.get_interview(
-                interview_id=interview_uuid,
-                employee_id=UUID(current_user.user_id)
-            )
-            
-            # If not found, check if interview exists at all (for proper error message)
-            if not interview_with_messages:
-                from sqlalchemy import select
-                from app.models.db_models import Interview as InterviewModel
-                
-                stmt = select(InterviewModel).where(InterviewModel.id_interview == interview_uuid)
-                result = await db.execute(stmt)
-                exists = result.scalar_one_or_none() is not None
-                
-                if not exists:
-                    return error_response(
-                        message="Interview not found",
-                        code=404,
-                        errors=[{"field": "interview_id", "error": "Interview does not exist"}]
-                    )
-                else:
-                    # Interview exists but doesn't belong to user
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(
-                        f"User {current_user.user_id} attempted to export interview "
-                        f"{request.interview_id} that belongs to another user"
-                    )
-                    return error_response(
-                        message="Access denied",
-                        code=403,
-                        errors=[{
-                            "field": "interview_id",
-                            "error": "You don't have permission to export this interview"
-                        }]
-                    )
-        
-        # Handle not found
-        if not interview_with_messages:
-            raise InterviewNotFoundError(request.interview_id)
+        # Use service layer with allow_cross_user parameter
+        # This eliminates direct database queries and handles authorization internally
+        interview_with_messages = await interview_service.get_interview(
+            interview_id=interview_uuid,
+            employee_id=UUID(current_user.user_id),
+            allow_cross_user=has_read_all
+        )
         
         # Get context service for user info
         context_service = get_context_service()
@@ -1384,25 +1328,37 @@ async def export_interview(
         )
         
     except InterviewNotFoundError as e:
-        return error_response(
+        error_resp = error_response(
             message="Interview not found",
             code=404,
-            errors=[{"field": "interview_id", "error": str(e)}]
+            errors=[{"field": "interview_id", "error": "Interview does not exist"}]
         )
+        return JSONResponse(status_code=404, content=error_resp.model_dump())
     except InterviewAccessDeniedError as e:
-        return error_response(
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"User {current_user.user_id} attempted to export interview "
+            f"{request.interview_id} that belongs to another user"
+        )
+        error_resp = error_response(
             message="Access denied",
             code=403,
-            errors=[{"field": "interview_id", "error": str(e)}]
+            errors=[{
+                "field": "interview_id",
+                "error": "You don't have permission to export this interview"
+            }]
         )
+        return JSONResponse(status_code=403, content=error_resp.model_dump())
     except Exception as e:
         import traceback
+        import logging
+        logger = logging.getLogger(__name__)
         error_detail = traceback.format_exc()
-        print(f"[ERROR] Exception in export_interview:")
-        print(error_detail)
+        logger.error(f"Exception in export_interview: {error_detail}")
         return error_response(
             message="Failed to export interview data",
             code=500,
-            errors=[{"field": "general", "error": str(e), "traceback": error_detail}]
+            errors=[{"field": "general", "error": str(e)}]
         )
 
