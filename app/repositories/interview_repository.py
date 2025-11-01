@@ -67,6 +67,27 @@ class InterviewRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
     
+    async def get_by_id_no_filter(
+        self, 
+        interview_id: UUID
+    ) -> Optional[Interview]:
+        """
+        Get interview by ID without employee validation (for admin access)
+        
+        Args:
+            interview_id: Interview UUID
+            
+        Returns:
+            Interview if found, None otherwise
+        """
+        stmt = (
+            select(Interview)
+            .options(selectinload(Interview.messages))
+            .where(Interview.id_interview == interview_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+    
     async def get_by_employee(
         self,
         employee_id: UUID,
@@ -108,22 +129,27 @@ class InterviewRepository:
         if end_date:
             conditions.append(Interview.started_at <= end_date)
         
-        # Count total items
-        count_stmt = select(func.count()).select_from(Interview).where(and_(*conditions))
-        count_result = await self.db.execute(count_stmt)
-        total_count = count_result.scalar()
-        
-        # Get paginated results
+        # Use window function to get count and data in single query
         offset = (page - 1) * page_size
         stmt = (
-            select(Interview)
+            select(
+                Interview,
+                func.count().over().label('total_count')
+            )
             .where(and_(*conditions))
             .order_by(Interview.started_at.desc())
             .limit(page_size)
             .offset(offset)
         )
         result = await self.db.execute(stmt)
-        interviews = result.scalars().all()
+        rows = result.all()
+        
+        if rows:
+            interviews = [row[0] for row in rows]
+            total_count = rows[0][1]
+        else:
+            interviews = []
+            total_count = 0
         
         return list(interviews), total_count
     
@@ -171,19 +197,17 @@ class InterviewRepository:
         if end_date:
             conditions.append(Interview.started_at <= end_date)
         
-        # Count total items
-        if conditions:
-            count_stmt = select(func.count()).select_from(Interview).where(and_(*conditions))
-        else:
-            count_stmt = select(func.count()).select_from(Interview)
-        count_result = await self.db.execute(count_stmt)
-        total_count = count_result.scalar()
-        
-        # Get paginated results
+        # Execute count and select queries sequentially to avoid concurrency issues
+        # Use a single query with window function to avoid multiple round trips
         offset = (page - 1) * page_size
+        
         if conditions:
+            # Use window function to get count and data in single query
             stmt = (
-                select(Interview)
+                select(
+                    Interview,
+                    func.count().over().label('total_count')
+                )
                 .where(and_(*conditions))
                 .order_by(Interview.started_at.desc())
                 .limit(page_size)
@@ -191,13 +215,24 @@ class InterviewRepository:
             )
         else:
             stmt = (
-                select(Interview)
+                select(
+                    Interview,
+                    func.count().over().label('total_count')
+                )
                 .order_by(Interview.started_at.desc())
                 .limit(page_size)
                 .offset(offset)
             )
+        
         result = await self.db.execute(stmt)
-        interviews = result.scalars().all()
+        rows = result.all()
+        
+        if rows:
+            interviews = [row[0] for row in rows]
+            total_count = rows[0][1]
+        else:
+            interviews = []
+            total_count = 0
         
         return list(interviews), total_count
     
@@ -243,7 +278,7 @@ class InterviewRepository:
         interview = result.scalar_one_or_none()
         
         if interview:
-            interview.status = InterviewStatusEnum.COMPLETED
+            interview.status = InterviewStatusEnum.completed
             interview.completed_at = datetime.utcnow()
             interview.updated_at = datetime.utcnow()
             await self.db.flush()

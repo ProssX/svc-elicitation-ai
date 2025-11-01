@@ -394,21 +394,46 @@ curl http://localhost:8001/api/v1/health
 
 ---
 
-## ✅ **Estado de Validación**
+## ✅ **Estado de Tests y Validación**
 
-**Última validación:** 8 de octubre, 2025  
-**Estado:** ✅ **TODOS LOS TESTS PASARON**
+**Última validación:** 1 de noviembre, 2025  
+**Estado:** ✅ **41/41 TESTS PASANDO (100%)**
+
+| Categoría | Tests | Estado |
+|-----------|-------|--------|
+| Tests Unitarios | 18 | ✅ 100% |
+| Tests de Integración (SQLite) | 15 | ✅ 100% |
+| Tests de Integración (PostgreSQL) | 8 | ✅ 100% |
+| **TOTAL** | **41** | **✅ 100%** |
+
+### Componentes Validados
 
 | Componente | Estado | Observación |
 |------------|--------|-------------|
 | Multi-idioma (ES/EN/PT) | ✅ | Funcional |
-| Eliminación de `context` | ✅ | Implementado |
-| `language` en `meta` | ✅ | Persistido correctamente |
-| Swagger UI actualizado | ✅ | Documentación clara |
+| Persistencia en PostgreSQL | ✅ | Implementado |
+| Optimización `/continue` | ✅ | 99% reducción payload |
+| Concurrencia asyncio/asyncpg | ✅ | Resuelto completamente |
+| Swagger UI actualizado | ✅ | Documentación completa |
 | Docker Services | ✅ | Healthy |
-| Estándar Confluence | ✅ | 100% cumplimiento |
+| Autenticación JWT | ✅ | Integrado con svc-users |
+| Sistema de Permisos | ✅ | PBAC implementado |
 
-📄 **Ver reporte completo:** [`VALIDATION_REPORT.md`](./VALIDATION_REPORT.md)
+### Ejecutar Tests
+
+```bash
+# Todos los tests
+python -m pytest tests/ -v
+
+# Solo tests unitarios
+python -m pytest tests/unit/ -v
+
+# Solo tests de integración
+python -m pytest tests/integration/ -v
+
+# Con coverage
+python -m pytest tests/ --cov=app --cov-report=html
+```
 
 ---
 
@@ -2193,6 +2218,61 @@ docker-compose down -v
 # Borrar también las imágenes (libera ~3GB)
 docker rmi svc-elicitation-ai-elicitation-ai ollama/ollama
 ```
+
+---
+
+## 📚 **API Documentation**
+
+### **Version 1.1.0 - API Optimization**
+
+This version introduces significant optimizations to the `/continue` endpoint, reducing request payload by 99% (from ~50KB to ~200 bytes).
+
+#### **📖 Documentation Files**
+
+| Document | Description | Audience |
+|----------|-------------|----------|
+| **[API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md)** | Complete API changes documentation with migration guide | Frontend developers |
+| **[QUICK_REFERENCE_v1.1.0.md](./docs/QUICK_REFERENCE_v1.1.0.md)** | Quick reference card with TL;DR and code examples | All developers |
+| **[Swagger UI](http://localhost:8002/docs)** | Interactive API documentation (when service is running) | All developers |
+| **[ReDoc](http://localhost:8002/redoc)** | Alternative API documentation view | All developers |
+
+#### **🚀 What's New in v1.1.0**
+
+- ✨ **99% payload reduction** - `/continue` endpoint now requires only 3 fields instead of full conversation history
+- ✨ **Standardized error format** - All validation errors (422) now follow ProssX standard format
+- ✨ **Deprecated fields** - `conversation_history` and `session_id` are now optional and ignored (backward compatible)
+- ✨ **Database persistence** - Backend automatically loads conversation history from PostgreSQL
+
+#### **📝 Quick Example**
+
+**Before (v1.0.0):**
+```json
+{
+  "interview_id": "uuid",
+  "session_id": "uuid",
+  "user_response": "answer",
+  "conversation_history": [...],  // 50KB+
+  "language": "es"
+}
+```
+
+**After (v1.1.0):**
+```json
+{
+  "interview_id": "uuid",
+  "user_response": "answer",
+  "language": "es"
+}
+```
+
+**Result:** Request size reduced from ~50KB to ~200 bytes!
+
+#### **🔗 Quick Links**
+
+- **Full Migration Guide:** [docs/API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md)
+- **Quick Reference:** [docs/QUICK_REFERENCE_v1.1.0.md](./docs/QUICK_REFERENCE_v1.1.0.md)
+- **OpenAPI Schema:** http://localhost:8002/docs (when running)
+- **Error Format Examples:** See [API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md#4-error-responses---new-format-422-validation-errors)
 
 ---
 

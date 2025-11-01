@@ -110,11 +110,11 @@ volumes:
   ollama-data:
     driver: local
 
-# Networks configuration (optional)
-# Uncomment if you need to connect this service with other Docker services
-# networks:
-#   tesis-network:
-#     driver: bridge
+# Networks configuration
+networks:
+  default:
+    name: svc-users-python_svc-users-network
+    external: true
 
 # Usage:
 # 1. Start services:

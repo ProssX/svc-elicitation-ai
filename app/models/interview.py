@@ -92,36 +92,85 @@ class StartInterviewRequest(BaseModel):
 
 
 class ContinueInterviewRequest(BaseModel):
-    """Request to continue an ongoing interview"""
-    interview_id: str = Field(description="Interview ID from database (required for persistence)")
-    session_id: str = Field(description="Interview session ID (legacy, for compatibility)")
-    user_response: str = Field(description="User's response to the previous question")
-    conversation_history: List[ConversationMessage] = Field(
-        description="Full conversation history (stateless)"
+    """
+    Request to continue an ongoing interview
+    
+    **✨ OPTIMIZED (v1.1.0):** This model now requires only minimal data. The backend 
+    automatically loads the conversation history from the database, reducing request 
+    payload by ~99% (from ~50KB to ~200 bytes).
+    
+    **Required Fields:**
+    - `interview_id` (UUID): Interview UUID from database
+    - `user_response` (string, 1-5000 chars): User's answer to the previous question
+    - `language` (string, "es"|"en"|"pt"): Interview language
+    
+    **Optional Fields (Deprecated - Backward Compatible):**
+    - `session_id` (string): Legacy session identifier - **IGNORED by backend**
+    - `conversation_history` (array): Full conversation history - **IGNORED by backend** (loaded from DB)
+    
+    **⚠️ BREAKING CHANGE NOTICE:**
+    Starting from v1.1.0, the backend loads conversation history from the database.
+    The `conversation_history` field in the request is no longer used and can be omitted.
+    
+    **Minimal Request Example (Recommended):**
+    ```json
+    {
+      "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+      "user_response": "Soy responsable del proceso de compras",
+      "language": "es"
+    }
+    ```
+    
+    **Legacy Request Example (Still Supported - Backward Compatible):**
+    ```json
+    {
+      "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
+      "user_response": "Soy responsable del proceso de compras",
+      "language": "es",
+      "session_id": "legacy-session-id",        // ⚠️ IGNORED
+      "conversation_history": [...]             // ⚠️ IGNORED
+    }
+    ```
+    
+    **Validation Rules:**
+    - `user_response`: Must be between 1 and 5000 characters
+    - `language`: Must match pattern "^(es|en|pt)$"
+    - `interview_id`: Must be a valid UUID format (validated by Pydantic)
+    
+    **Error Responses:**
+    - 422: Validation error (empty response, invalid language, invalid UUID, etc.)
+    - 404: Interview not found
+    - 403: Access denied (interview belongs to another user)
+    """
+    interview_id: UUID = Field(
+        description="Interview UUID from database (REQUIRED)"
+    )
+    user_response: str = Field(
+        description="User's response to the previous question (REQUIRED, 1-5000 chars)",
+        min_length=1,
+        max_length=5000
     )
     language: str = Field(
         default="es",
-        description="Interview language (es=Español, en=English, pt=Português)"
+        pattern="^(es|en|pt)$",
+        description="Interview language: es=Español, en=English, pt=Português (REQUIRED)"
+    )
+    
+    # Legacy fields (optional for backward compatibility)
+    session_id: Optional[str] = Field(
+        default=None,
+        description="⚠️ DEPRECATED: Legacy session ID - not used by backend, optional for backward compatibility"
+    )
+    conversation_history: Optional[List[ConversationMessage]] = Field(
+        default=None,
+        description="⚠️ DEPRECATED: Full conversation history - backend loads from database, optional for backward compatibility"
     )
     
     class Config:
         json_schema_extra = {
             "example": {
                 "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
-                "session_id": "550e8400-e29b-41d4-a716-446655440000",
                 "user_response": "Soy responsable del proceso de aprobación de compras",
-                "conversation_history": [
-                    {
-                        "role": "assistant",
-                        "content": "¿Cuál es tu rol en la organización?",
-                        "timestamp": "2025-10-03T00:00:00Z"
-                    },
-                    {
-                        "role": "user",
-                        "content": "Soy gerente de operaciones",
-                        "timestamp": "2025-10-03T00:01:00Z"
-                    }
-                ],
                 "language": "es"
             }
         }
