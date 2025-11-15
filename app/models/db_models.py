@@ -298,3 +298,153 @@ class InterviewProcessReference(Base):
     
     def __repr__(self):
         return f"<InterviewProcessReference(id={self.id_reference}, interview_id={self.interview_id}, process_id={self.process_id}, is_new={self.is_new_process})>"
+
+
+class MetricTypeEnum(str, enum.Enum):
+    """Metric event types"""
+    interview_started = "interview_started"
+    interview_completed = "interview_completed"
+    detection_invoked = "detection_invoked"
+
+
+class MetricOutcomeEnum(str, enum.Enum):
+    """Metric event outcomes"""
+    success = "success"
+    timeout = "timeout"
+    error = "error"
+    not_applicable = "not_applicable"  # For events that don't have success/failure (e.g. interview_started)
+
+
+class MetricEvent(Base):
+    """
+    Metric Event - stores individual metric events for historical analysis
+    
+    Captures:
+    - Interview lifecycle events (started, completed)
+    - Process detection invocations (success, timeout, error)
+    - Performance metrics (latency, confidence scores)
+    - Completion reasons and question counts
+    - Dimensional context (employee, organization, language) for analytics
+    """
+    __tablename__ = "metric_event"
+    
+    # Primary Key - UUID v7 for time-ordered IDs (or uuid4 for Python < 3.12)
+    id_event = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid_generate,
+        comment="Unique event identifier (UUID v7 or v4)"
+    )
+    
+    # Event Classification
+    event_type = Column(
+        SQLEnum(MetricTypeEnum, name="metric_type_enum", create_type=False),
+        nullable=False,
+        index=True,
+        comment="Type of metric event (interview_started, interview_completed, detection_invoked)"
+    )
+    
+    outcome = Column(
+        SQLEnum(MetricOutcomeEnum, name="metric_outcome_enum", create_type=False),
+        nullable=False,
+        default=MetricOutcomeEnum.not_applicable,
+        index=True,
+        comment="Event outcome (success, timeout, error, not_applicable)"
+    )
+    
+    # Optional Foreign Key to Interview (for interview-related events)
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("interview.id_interview", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Reference to interview if event is interview-related"
+    )
+    
+    # Dimensional Attributes for Analytics (denormalized for query performance)
+    employee_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Employee who triggered the event (denormalized from interview)"
+    )
+    
+    organization_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Organization context (for multi-tenant analytics)"
+    )
+    
+    language = Column(
+        String(5),
+        nullable=True,
+        index=True,
+        comment="Language of the interview (es/en/pt)"
+    )
+    
+    # Performance Metrics
+    latency_ms = Column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Event latency in milliseconds (for detection_invoked events)"
+    )
+    
+    confidence_score = Column(
+        Numeric(4, 3),
+        nullable=True,
+        comment="Confidence score 0.000-1.000 (for successful detection_invoked events)"
+    )
+    
+    # Interview Completion Metrics
+    question_count = Column(
+        Integer,
+        nullable=True,
+        comment="Number of questions in interview (for interview_completed events)"
+    )
+    
+    early_finish = Column(
+        Boolean,
+        nullable=True,
+        comment="Whether interview finished before max_questions (for interview_completed events)"
+    )
+    
+    completion_reason = Column(
+        String(50),
+        nullable=True,
+        comment="Why interview ended: user_requested, agent_signaled, safety_limit, max_questions"
+    )
+    
+    # Timestamps
+    occurred_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        index=True,
+        comment="When the event occurred"
+    )
+    
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        comment="Record creation timestamp"
+    )
+    
+    # Relationship to Interview (optional)
+    interview = relationship(
+        "Interview",
+        foreign_keys=[interview_id],
+        lazy="select"
+    )
+    
+    # Indexes for query performance
+    __table_args__ = (
+        Index('idx_metric_event_type_occurred', 'event_type', 'occurred_at'),
+        Index('idx_metric_event_outcome_occurred', 'outcome', 'occurred_at'),
+        Index('idx_metric_event_interview', 'interview_id'),
+        {'comment': 'Metric events for performance monitoring and historical analysis'}
+    )
+    
+    def __repr__(self):
+        return f"<MetricEvent(id={self.id_event}, type={self.event_type}, outcome={self.outcome}, occurred_at={self.occurred_at})>"

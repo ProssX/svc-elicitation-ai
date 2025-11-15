@@ -177,31 +177,6 @@ async def get_permissions():
         )
 
 
-@router.post("/test")
-async def test_interview(
-    request: StartInterviewRequest,
-    current_user: TokenPayload = Depends(get_current_user)
-):
-    """
-    Test endpoint - Returns mock response without calling LLM
-    """
-    return success_response(
-        data={
-            "session_id": "test-session-123",
-            "question": f"Hola! Soy el Agente ProssX. Test mode activo. Usuario: {current_user.user_id}, Org: {current_user.organization_id}, Language: {request.language}",
-            "question_number": 1,
-            "is_final": False
-        },
-        message="Test interview started successfully",
-        meta={
-            "test_mode": True,
-            "language": request.language,
-            "user_id": current_user.user_id,
-            "organization_id": current_user.organization_id
-        }
-    )
-
-
 @router.post("/start", response_model=None)
 async def start_interview(
     request: StartInterviewRequest,

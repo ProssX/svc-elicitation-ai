@@ -28,6 +28,10 @@ class ProcessMatchingAgent:
         """Initialize the process matching agent with the configured model"""
         self.model = create_model()
         self.timeout = settings.process_matching_timeout  # Timeout from config
+        
+        # Metrics collector for monitoring
+        from app.services.metrics_service import get_metrics_collector
+        self.metrics = get_metrics_collector()
     
     async def match_process(
         self,
@@ -117,6 +121,16 @@ class ProcessMatchingAgent:
                     "success": True
                 }
             )
+            
+            # Record metrics: successful detection
+            self.metrics.record_detection_invocation(
+                latency_ms=elapsed * 1000,  # Convert to milliseconds
+                success=True,
+                timeout=False,
+                error=False,
+                confidence_score=result.confidence_score if result.is_match else None
+            )
+            
             return result
         
         except asyncio.TimeoutError:
@@ -132,6 +146,16 @@ class ProcessMatchingAgent:
                     "fallback": "no_match"
                 }
             )
+            
+            # Record metrics: timeout
+            self.metrics.record_detection_invocation(
+                latency_ms=elapsed * 1000,
+                success=False,
+                timeout=True,
+                error=False,
+                confidence_score=None
+            )
+            
             # Return no match on timeout
             return ProcessMatchResult(
                 is_match=False,
@@ -155,6 +179,16 @@ class ProcessMatchingAgent:
                     "fallback": "no_match"
                 }
             )
+            
+            # Record metrics: error
+            self.metrics.record_detection_invocation(
+                latency_ms=elapsed * 1000,
+                success=False,
+                timeout=False,
+                error=True,
+                confidence_score=None
+            )
+            
             # Return no match on any error
             return ProcessMatchResult(
                 is_match=False,

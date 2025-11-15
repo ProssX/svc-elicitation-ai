@@ -5,11 +5,13 @@ Main entry point for the elicitation AI microservice
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from sqlalchemy.exc import SQLAlchemyError
+import os
 from app.config import settings
-from app.routers import health, interviews
+from app.routers import health, interviews, metrics
 from app.database import validate_database_connection, close_database_connection
 from app.exceptions import (
     InterviewNotFoundError,
@@ -710,9 +712,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
 # Include routers
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(interviews.router, prefix="/api/v1", tags=["interviews"])
+app.include_router(metrics.router, tags=["metrics"])
 
 
 @app.get("/")
@@ -723,8 +731,19 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "docs": "/docs",
-        "health": "/api/v1/health"
+        "health": "/api/v1/health",
+        "dashboard": "/dashboard"
     }
+
+
+@app.get("/dashboard")
+async def dashboard():
+    """Serve the monitoring dashboard"""
+    dashboard_path = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path)
+    else:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
 if __name__ == "__main__":

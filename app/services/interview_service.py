@@ -88,6 +88,10 @@ class InterviewService:
             cache_ttl=settings.context_cache_ttl
         )
         self.agent = get_agent()
+        
+        # Metrics collector for monitoring
+        from app.services.metrics_service import get_metrics_collector
+        self.metrics = get_metrics_collector()
     
     async def start_interview(
         self,
@@ -212,6 +216,14 @@ class InterviewService:
                 "performance_target_met": total_elapsed < 3.0,
                 "context_enrichment_enabled": settings.enable_context_enrichment
             }
+        )
+        
+        # Record metrics: interview started (no interview_id to avoid FK constraint during transaction)
+        self.metrics.record_interview_start(
+            interview_id=None,
+            employee_id=employee_id,
+            organization_id=UUID(organization_id) if organization_id else None,
+            language=interview.language
         )
         
         return interview, first_message
@@ -385,10 +397,26 @@ class InterviewService:
         # Update interview updated_at timestamp
         interview.updated_at = datetime.utcnow()
         
-        # If final, mark interview as completed
+        # If final, mark interview as completed and record metrics
         if agent_response.is_final:
             interview = await self.interview_repo.mark_completed(interview_id)
             logger.info(f"Interview {interview_id} marked as completed")
+            
+            # Record completion metrics
+            question_count = (last_sequence + 2) // 2  # Calculate from sequence numbers
+            early_finish = question_count < settings.max_questions if not settings.enable_dynamic_completion else question_count < settings.max_questions_safety_limit
+            
+            self.metrics.record_interview_completion(
+                question_count=question_count,
+                early_finish=early_finish,
+                user_requested=(agent_response.completion_reason == "user_requested"),
+                agent_signaled=(agent_response.completion_reason == "agent_signaled"),
+                safety_limit=(agent_response.completion_reason == "safety_limit"),
+                interview_id=interview_id,
+                employee_id=employee_id,
+                organization_id=UUID(organization_id) if organization_id else None,
+                language=interview.language
+            )
             
             asyncio.create_task(self._publish_interview_completed(interview_id, organization_id, auth_token))
         

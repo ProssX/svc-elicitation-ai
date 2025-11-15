@@ -163,6 +163,12 @@ class InterviewResponse(BaseModel):
         default_factory=list,
         description="List of process matches found during this interaction (NEW)"
     )
+    
+    # Completion reason tracking (for metrics)
+    completion_reason: Optional[Literal["user_requested", "agent_signaled", "safety_limit", "max_questions"]] = Field(
+        default=None,
+        description="Why the interview ended (for metrics tracking)"
+    )
 
 
 class StartInterviewRequest(BaseModel):
@@ -321,7 +327,7 @@ class InterviewExportData(BaseModel):
     - ❌ NO completeness_score (internal metric removed)
     - ❌ NO process extraction (done by another service)
     """
-    session_id: str = Field(description="Interview session ID")
+    session_id: Optional[str] = Field(default=None, description="Interview session ID (legacy, optional)")
     user_id: Optional[str] = Field(default=None, description="User ID")
     user_name: str = Field(description="User name")
     user_role: str = Field(description="User role")

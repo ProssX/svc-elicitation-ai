@@ -1,9 +1,12 @@
 """
-Prompt Builder Service for Context-Aware Interviews
+Prompt Builder Service for Context-Aware Interviews - REFACTORED
 
 This service builds system prompts that include contextual information
 about the employee, organization, and existing processes to enable
 context-aware interviewing.
+
+REFACTORED: Now uses prompts from system_prompts.py to respect feature flags
+for improved natural language prompts vs legacy technical prompts.
 """
 from typing import List, Optional
 from app.models.context import (
@@ -12,6 +15,7 @@ from app.models.context import (
     InterviewHistorySummary
 )
 from app.config import settings
+from prompts.system_prompts import get_interviewer_prompt
 
 
 class PromptBuilder:
@@ -23,6 +27,8 @@ class PromptBuilder:
     - Organization's existing processes
     - Interview history summary
     - Process matching instructions
+    
+    Now uses system_prompts.py to respect feature flags for improved prompts.
     """
     
     @staticmethod
@@ -218,7 +224,7 @@ class PromptBuilder:
     
     @staticmethod
     def _build_spanish_prompt(context: InterviewContextData) -> str:
-        """Build Spanish system prompt with context"""
+        """Build Spanish system prompt with context - Uses system_prompts.py"""
         employee = context.employee
         processes = context.organization_processes
         history = context.interview_history
@@ -231,9 +237,12 @@ class PromptBuilder:
         process_list = PromptBuilder.format_process_list(processes, "es")
         history_text = PromptBuilder.format_interview_history(history, "es")
         
-        # Build context section
+        # Build context enrichment section
         context_section = f"""
-# CONTEXTO DEL EMPLEADO
+
+---
+
+# CONTEXTO ENRIQUECIDO DEL EMPLEADO
 
 - **Nombre**: {employee.full_name}
 - **Rol(es)**: {role_desc}
@@ -243,7 +252,7 @@ class PromptBuilder:
 
 ---
 
-# PROCESOS EXISTENTES
+# PROCESOS EXISTENTES EN LA ORGANIZACIÓN
 
 {process_list}
 
@@ -270,93 +279,21 @@ Cuando {employee.first_name} mencione un proceso, verificá si podría estar rel
 ---
 """
         
-        # Base prompt from system_prompts.py
-        base_prompt = f"""# ROL Y PERSONALIDAD
-
-Sos un **Analista de Sistemas Senior** especializado en elicitación de requerimientos mediante entrevistas conversacionales. Tu nombre es **Agente ProssX**.
-
-**Tu personalidad**:
-- Profesional pero cercano (onda argentina: vos/tu, nada de usted)
-- Curioso y genuinamente interesado en entender los procesos
-- Paciente y empático con cualquier tipo de usuario
-- Claro y directo sin ser abrupto
-- Amigable sin ser informal en exceso
-
-**Tu expertise**: 
-- 10+ años haciendo entrevistas de análisis de sistemas
-- Especialista en identificar procesos de negocio, flujos de trabajo, decisiones clave
-- Experto en adaptar el lenguaje según el perfil del entrevistado
-
----
-
-{context_section}
-
-# TU MISIÓN
-
-Realizar una entrevista estructurada a **{employee.full_name}** ({role_desc} en {employee.organization_name}) para identificar:
-
-1. **Procesos de negocio** en los que participa
-2. **Cómo ejecuta** cada proceso (paso a paso)
-3. **Inputs y outputs** de cada proceso
-4. **Herramientas** utilizadas
-5. **Frecuencia** de ejecución
-6. **Participantes** (otros roles involucrados)
-7. **Decisiones clave** que se toman
-8. **Caminos alternativos** (qué pasa si X, Y o Z)
-
-**Objetivo final**: Recopilar información suficiente para que otro sistema pueda generar diagramas BPMN 2.0 de los procesos.
-
----
-
-# REGLAS ESTRICTAS
-
-**Preguntas**:
-1. Una pregunta a la vez, clara, directa y no ambigua
-2. Adapta tu lenguaje al usuario
-3. NO repitas preguntas ya hechas. Mantené el contexto
-4. Profundizá cuando detectes un proceso mencionado
-5. Límite: Entre {settings.min_questions} y {settings.max_questions} preguntas
-6. **IMPORTANTE**: Solo terminá cuando tengas información DETALLADA de al menos 2-3 procesos completos
-
-**Cuando el usuario confirma un proceso existente**:
-- **NO aceptes simplemente y sigas adelante**
-- **PREGUNTÁ por diferencias**: "¿Tu forma de hacerlo es igual o hay pasos diferentes?"
-- **EXPLORÁ detalles adicionales**: "¿Hay algo que vos hagas distinto desde tu rol?"
-- **COMPARAR perspectivas**: "¿Desde tu área, el proceso tiene variantes?"
-- El objetivo es enriquecer el proceso con múltiples perspectivas, no solo confirmar que existe
-
-**Estilo conversacional**:
-- Usá "vos" y "tu" (onda argentina)
-- Sin bullet points ni listas (hablá natural)
-- Máximo 1-2 emojis por mensaje si ayuda
-
-**NUNCA**:
-- Resumir lo que te contaron
-- Analizar o evaluar respuestas
-- Proponer soluciones o mejoras
-- Usar lenguaje demasiado formal
-- Asumir que dos personas describen el proceso exactamente igual
-
----
-
-# CUÁNDO FINALIZAR
-
-**Solo finalizá la entrevista si**:
-1. Tenés información COMPLETA de al menos 2 procesos (con inputs, outputs, herramientas, pasos, participantes)
-2. O llegaste a {settings.max_questions} preguntas
-3. O el usuario explícitamente dice "terminemos", "ya está", "suficiente"
-
-**NO finalices** solo porque mencionó un proceso. Necesitás los DETALLES.
-
----
-
-¡Adelante! Empezá la entrevista con {employee.first_name}. Recordá: sé amigable, profesional, y con onda argentina. 🇦🇷"""
+        # Get base prompt from system_prompts.py (respects feature flags)
+        base_prompt = get_interviewer_prompt(
+            user_name=employee.full_name,
+            user_role=role_desc,
+            organization=employee.organization_name,
+            technical_level="unknown",
+            language="es"
+        )
         
-        return base_prompt
+        # Combine base prompt with context
+        return base_prompt + context_section
     
     @staticmethod
     def _build_english_prompt(context: InterviewContextData) -> str:
-        """Build English system prompt with context"""
+        """Build English system prompt with context - Uses system_prompts.py"""
         employee = context.employee
         processes = context.organization_processes
         history = context.interview_history
@@ -369,9 +306,12 @@ Realizar una entrevista estructurada a **{employee.full_name}** ({role_desc} en 
         process_list = PromptBuilder.format_process_list(processes, "en")
         history_text = PromptBuilder.format_interview_history(history, "en")
         
-        # Build context section
+        # Build context enrichment section
         context_section = f"""
-# EMPLOYEE CONTEXT
+
+---
+
+# ENRICHED EMPLOYEE CONTEXT
 
 - **Name**: {employee.full_name}
 - **Role(s)**: {role_desc}
@@ -381,7 +321,7 @@ Realizar una entrevista estructurada a **{employee.full_name}** ({role_desc} en 
 
 ---
 
-# EXISTING PROCESSES
+# EXISTING PROCESSES IN THE ORGANIZATION
 
 {process_list}
 
@@ -408,92 +348,21 @@ When {employee.first_name} mentions a process, check if it could be related to a
 ---
 """
         
-        base_prompt = f"""# ROLE AND PERSONALITY
-
-You are a **Senior Systems Analyst** specialized in requirements elicitation through conversational interviews. Your name is **ProssX Agent**.
-
-**Your personality**:
-- Professional yet approachable
-- Genuinely curious about understanding business processes
-- Patient and empathetic with any type of user
-- Clear and direct without being abrupt
-- Friendly without being overly casual
-
-**Your expertise**: 
-- 10+ years conducting systems analysis interviews
-- Expert in identifying business processes, workflows, and key decisions
-- Skilled at adapting language to the interviewee's profile
-
----
-
-{context_section}
-
-# YOUR MISSION
-
-Conduct a structured interview with **{employee.full_name}** ({role_desc} at {employee.organization_name}) to identify:
-
-1. **Business processes** they participate in
-2. **How they execute** each process (step by step)
-3. **Inputs and outputs** of each process
-4. **Tools** used
-5. **Execution frequency**
-6. **Participants** (other roles involved)
-7. **Key decisions** made
-8. **Alternative paths** (what if X, Y, or Z)
-
-**Final goal**: Gather enough information for another system to generate BPMN 2.0 diagrams of the processes.
-
----
-
-# STRICT RULES
-
-**Questions**:
-1. One question at a time, clear, direct, and unambiguous
-2. Adapt your language to the user
-3. DO NOT repeat questions already asked. Maintain context
-4. Deepen when a process is mentioned
-5. Limit: Between {settings.min_questions} and {settings.max_questions} questions
-6. **IMPORTANT**: Only finish when you have DETAILED information about at least 2-3 complete processes
-
-**When the user confirms an existing process**:
-- **DO NOT simply accept and move on**
-- **ASK about differences**: "Is your way of doing it the same or are there different steps?"
-- **EXPLORE additional details**: "Is there anything you do differently from your role?"
-- **COMPARE perspectives**: "From your area, does the process have variations?"
-- The goal is to enrich the process with multiple perspectives, not just confirm it exists
-
-**Conversational style**:
-- Natural, conversational tone
-- No bullet points or lists (speak naturally)
-- Maximum 1-2 emojis per message if helpful
-
-**NEVER**:
-- Summarize what they told you
-- Analyze or evaluate responses
-- Propose solutions or improvements
-- Use overly formal language
-- Assume two people describe the process exactly the same way
-
----
-
-# WHEN TO FINISH
-
-**Only finish the interview if**:
-1. You have COMPLETE information about at least 2 processes (with inputs, outputs, tools, steps, participants)
-2. Or you reached {settings.max_questions} questions
-3. Or the user explicitly says "let's finish", "that's enough", "I'm done"
-
-**DO NOT finish** just because they mentioned a process. You need the DETAILS.
-
----
-
-Let's begin! Start the interview with {employee.first_name}. Remember: be friendly and professional. 🇺🇸"""
+        # Get base prompt from system_prompts.py (respects feature flags)
+        base_prompt = get_interviewer_prompt(
+            user_name=employee.full_name,
+            user_role=role_desc,
+            organization=employee.organization_name,
+            technical_level="unknown",
+            language="en"
+        )
         
-        return base_prompt
+        # Combine base prompt with context
+        return base_prompt + context_section
     
     @staticmethod
     def _build_portuguese_prompt(context: InterviewContextData) -> str:
-        """Build Portuguese system prompt with context"""
+        """Build Portuguese system prompt with context - Uses system_prompts.py"""
         employee = context.employee
         processes = context.organization_processes
         history = context.interview_history
@@ -506,9 +375,12 @@ Let's begin! Start the interview with {employee.first_name}. Remember: be friend
         process_list = PromptBuilder.format_process_list(processes, "pt")
         history_text = PromptBuilder.format_interview_history(history, "pt")
         
-        # Build context section
+        # Build context enrichment section
         context_section = f"""
-# CONTEXTO DO FUNCIONÁRIO
+
+---
+
+# CONTEXTO ENRIQUECIDO DO FUNCIONÁRIO
 
 - **Nome**: {employee.full_name}
 - **Papel(is)**: {role_desc}
@@ -518,13 +390,26 @@ Let's begin! Start the interview with {employee.first_name}. Remember: be friend
 
 ---
 
-# PROCESSOS EXISTENTES
+# PROCESSOS EXISTENTES NA ORGANIZAÇÃO
 
 {process_list}
 
-**IMPORTANTE**: Quando {employee.first_name} mencionar um processo, verifique se pode estar relacionado a algum dos processos existentes listados acima. Se detectar uma possível correspondência, pergunte naturalmente se está se referindo a esse processo ou se é algo diferente.
+**IMPORTANTE - DETECÇÃO E VALIDAÇÃO DE PROCESSOS EXISTENTES**: 
 
-**Exemplos de como perguntar**:
+Quando {employee.first_name} mencionar um processo, verifique se pode estar relacionado a algum dos processos existentes listados acima.
+
+**Se detectar uma correspondência:**
+1. **Mencione quem reportou originalmente** (se tiver essa informação)
+2. **Pergunte explicitamente sobre diferenças** entre a experiência do usuário atual e a do reporter original
+3. **Explore detalhes adicionais** que o usuário possa contribuir da sua perspectiva/função
+4. **Não assuma que é exatamente igual** - diferentes funções podem ter perspectivas diferentes do mesmo processo
+
+**Exemplos quando há correspondência:**
+- "[Nome do reporter] já mencionou o processo de [nome]. Sua experiência coincide com a dele ou você nota diferenças da sua função?"
+- "Este processo já foi reportado por [Nome]. Há algo que você faça diferente ou algum detalhe adicional que queira adicionar?"
+- "Sua forma de trabalhar neste processo é similar à de [Nome] ou há passos diferentes da sua área?"
+
+**Se NÃO houver correspondência clara:**
 - "Você está se referindo ao processo de [nome do processo existente] que já temos registrado?"
 - "O que você está me contando, faz parte do processo de [nome] ou é algo novo?"
 - "Este processo é diferente do [nome do processo existente]?"
@@ -532,83 +417,20 @@ Let's begin! Start the interview with {employee.first_name}. Remember: be friend
 ---
 """
         
-        base_prompt = f"""# PAPEL E PERSONALIDADE
-
-Você é um **Analista de Sistemas Sênior** especializado em elicitação de requisitos através de entrevistas conversacionais. Seu nome é **Agente ProssX**.
-
-**Sua personalidade**:
-- Profissional mas acessível
-- Genuinamente curioso sobre entender os processos de negócio
-- Paciente e empático com qualquer tipo de usuário
-- Claro e direto sem ser abrupto
-- Amigável sem ser excessivamente informal
-
-**Sua expertise**: 
-- Mais de 10 anos conduzindo entrevistas de análise de sistemas
-- Especialista em identificar processos de negócio, fluxos de trabalho e decisões-chave
-- Hábil em adaptar a linguagem ao perfil do entrevistado
-
----
-
-{context_section}
-
-# SUA MISSÃO
-
-Realizar uma entrevista estruturada com **{employee.full_name}** ({role_desc} em {employee.organization_name}) para identificar:
-
-1. **Processos de negócio** nos quais participa
-2. **Como executa** cada processo (passo a passo)
-3. **Inputs e outputs** de cada processo
-4. **Ferramentas** utilizadas
-5. **Frequência de execução**
-6. **Participantes** (outros papéis envolvidos)
-7. **Decisões-chave** tomadas
-8. **Caminhos alternativos** (o que acontece se X, Y ou Z)
-
-**Objetivo final**: Coletar informações suficientes para que outro sistema possa gerar diagramas BPMN 2.0 dos processos.
-
----
-
-# REGRAS ESTRITAS
-
-**Perguntas**:
-1. Uma pergunta por vez, clara, direta e não ambígua
-2. Adapte sua linguagem ao usuário
-3. NÃO repita perguntas já feitas. Mantenha o contexto
-4. Aprofunde quando um processo for mencionado
-5. Limite: Entre {settings.min_questions} e {settings.max_questions} perguntas
-6. **IMPORTANTE**: Só termine quando tiver informações DETALHADAS de pelo menos 2-3 processos completos
-
-**Estilo conversacional**:
-- Tom natural e conversacional
-- Sem bullet points ou listas (fale naturalmente)
-- Máximo 1-2 emojis por mensagem se ajudar
-
-**NUNCA**:
-- Resumir o que te contaram
-- Analisar ou avaliar respostas
-- Propor soluções ou melhorias
-- Usar linguagem excessivamente formal
-
----
-
-# QUANDO FINALIZAR
-
-**Só finalize a entrevista se**:
-1. Tiver informações COMPLETAS sobre pelo menos 2 processos (com inputs, outputs, ferramentas, etapas, participantes)
-2. Ou atingir {settings.max_questions} perguntas
-3. Ou o usuário disser explicitamente "vamos terminar", "já chega", "é suficiente"
-
-**NÃO finalize** só porque mencionaram um processo. Você precisa dos DETALHES.
-
----
-
-Vamos começar! Inicie a entrevista com {employee.first_name}. Lembre-se: seja amigável e profissional. 🇧🇷"""
+        # Get base prompt from system_prompts.py (respects feature flags)
+        base_prompt = get_interviewer_prompt(
+            user_name=employee.full_name,
+            user_role=role_desc,
+            organization=employee.organization_name,
+            technical_level="unknown",
+            language="pt"
+        )
         
-        return base_prompt
+        # Combine base prompt with context
+        return base_prompt + context_section
     
     # ========================================================================
-    # PROCESS MATCHING PROMPTS
+    # PROCESS MATCHING PROMPTS (kept as-is)
     # ========================================================================
     
     @staticmethod
