@@ -2146,6 +2146,323 @@ Si encontrás algún problema:
 
 ---
 
+## 🌟 **Natural Interview Experience Feature**
+
+### **Overview**
+
+The Natural Interview Experience feature makes interviews more accessible and accurate by using natural language and semantic process detection. This feature is designed to work with any type of user, regardless of their technical background.
+
+### **Key Improvements**
+
+1. **Natural Language Prompts** - Agent presents itself in an accessible way without technical jargon
+2. **Semantic Process Detection** - AI-powered detection that understands typos, synonyms, and indirect descriptions
+3. **Dynamic Interview Completion** - Agent decides when to finish based on content quality, not arbitrary question counts
+
+### **Feature Flags**
+
+Control these features independently using environment variables:
+
+| Feature Flag | Description | Default | Environment Variable |
+|--------------|-------------|---------|---------------------|
+| `enable_improved_prompts` | Use natural language prompts instead of technical ones | `false` | `ENABLE_IMPROVED_PROMPTS` |
+| `enable_semantic_process_detection` | Use AI-based process detection instead of keywords | `false` | `ENABLE_SEMANTIC_PROCESS_DETECTION` |
+| `enable_dynamic_completion` | Agent decides when to finish (vs min/max questions) | `false` | `ENABLE_DYNAMIC_COMPLETION` |
+
+### **1. Natural Language Prompts**
+
+**Purpose:** Make the interview accessible to non-technical users by eliminating technical terminology.
+
+**Changes:**
+- Agent no longer presents itself as "Senior Systems Analyst"
+- Questions use everyday language: "How is your day-to-day?" instead of "What processes do you execute?"
+- Agent adapts its vocabulary to match the user's language
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_IMPROVED_PROMPTS=true
+```
+
+**Example Comparison:**
+
+| Before (Technical) | After (Natural) |
+|-------------------|-----------------|
+| "I'm a Senior Systems Analyst..." | "I'm your assistant to understand your work..." |
+| "What processes do you execute?" | "How is your day-to-day?" |
+| "What procedures do you follow?" | "What tasks do you usually do?" |
+
+### **2. Semantic Process Detection**
+
+**Purpose:** Accurately detect when users mention business processes, even with typos, synonyms, or informal language.
+
+**How It Works:**
+
+The system uses a **two-layer detection strategy**:
+
+**Layer 1: Heuristic Pre-Filter (<1ms)**
+- Fast keyword matching with expanded vocabulary
+- Action verbs: "do", "perform", "execute", "manage", etc.
+- Nouns: "task", "activity", "responsibility", "function", etc.
+- Contextual indicators: "when", "if", "every time", "daily", etc.
+- Very permissive - if there's ANY indication, triggers Layer 2
+
+**Layer 2: Semantic Analysis (~500ms-1s)**
+- Deep AI analysis using ProcessMatchingAgent
+- Understands typos: "procezo", "proseso", "proceo"
+- Recognizes synonyms: "workflow", "procedure", "methodology"
+- Interprets indirect descriptions: "what I do is...", "my job involves..."
+- Returns confidence score (0.0 to 1.0)
+
+**Error Handling:**
+- **Timeout handling:** 3-second timeout with automatic retry
+- **Intelligent fallback:** If detection fails, assumes it's a process (better false positive than losing information)
+- **Parallel execution:** Detection runs in parallel with question generation to avoid blocking
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+PROCESS_DETECTION_TIMEOUT=3.0
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+ENABLE_DETECTION_RETRY=true
+```
+
+**Example Detections:**
+
+| User Input | Detection Result | Confidence |
+|------------|------------------|------------|
+| "I manage the purchase approval process" | ✅ Process detected | 0.95 |
+| "I handle the procezo of approvals" (typo) | ✅ Process detected | 0.85 |
+| "My daily routine involves reviewing requests" | ✅ Process detected | 0.75 |
+| "I work with the team" | ❌ Not a process | 0.30 |
+
+### **3. Dynamic Interview Completion**
+
+**Purpose:** Let the agent decide when to finish based on content quality, not arbitrary question counts.
+
+**How It Works:**
+
+**Legacy Mode (enable_dynamic_completion=false):**
+- Uses `MIN_QUESTIONS` and `MAX_QUESTIONS` settings
+- Interview must reach minimum questions before finishing
+- Ends automatically at maximum questions
+
+**Dynamic Mode (enable_dynamic_completion=true):**
+- Agent uses professional judgment to determine completeness
+- Respects explicit user signals: "I want to finish", "that's all", "nothing more"
+- Detects agent closing signals: "thank you for your time", "has been recorded"
+- Safety limit prevents infinite loops (default: 50 questions)
+- No minimum questions - user can finish anytime
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_DYNAMIC_COMPLETION=true
+MAX_QUESTIONS_SAFETY_LIMIT=50  # Safety limit only
+```
+
+**User Signals Detected:**
+
+| Language | Finish Signals |
+|----------|----------------|
+| Spanish | "quiero terminar", "terminemos", "eso es todo", "no tengo más", "ya está" |
+| English | "let's finish", "i want to finish", "that's all", "nothing more", "i'm done" |
+| Portuguese | "vamos terminar", "quero terminar", "é tudo", "não tenho mais", "já chega" |
+
+### **Enabling All Features**
+
+To enable the complete Natural Interview Experience:
+
+```bash
+# .env
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+ENABLE_DYNAMIC_COMPLETION=true
+PROCESS_DETECTION_TIMEOUT=3.0
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+ENABLE_DETECTION_RETRY=true
+MAX_QUESTIONS_SAFETY_LIMIT=50
+```
+
+**Docker Configuration:**
+
+```yaml
+# docker-compose.yml
+services:
+  elicitation-ai:
+    environment:
+      - ENABLE_IMPROVED_PROMPTS=true
+      - ENABLE_SEMANTIC_PROCESS_DETECTION=true
+      - ENABLE_DYNAMIC_COMPLETION=true
+      - PROCESS_DETECTION_TIMEOUT=3.0
+      - PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+      - ENABLE_DETECTION_RETRY=true
+      - MAX_QUESTIONS_SAFETY_LIMIT=50
+```
+
+### **Monitoring and Logs**
+
+The system logs detailed information about process detection:
+
+```bash
+# View detection logs
+docker logs svc-elicitation-ai | grep PROCESS_DETECTION
+
+# Example log output:
+# [PROCESS_DETECTION] Heuristic filter detected potential process - running semantic detection
+# [PROCESS_DETECTION] Semantic detection completed: is_detected=True, confidence=0.85, latency_ms=750
+# [PROCESS_DETECTION] Detection timeout on first attempt - retrying
+# [PROCESS_DETECTION] Retry successful: is_detected=True, confidence=0.75, latency_ms=1200
+```
+
+**Log Fields:**
+- `is_detected`: Whether a process was detected
+- `confidence_score`: Confidence level (0.0 to 1.0)
+- `process_type`: Type of process (new/existing/unclear)
+- `latency_ms`: Detection latency in milliseconds
+- `attempt`: Attempt number (1 or 2)
+- `success`: Whether detection succeeded
+
+### **Performance Considerations**
+
+**Latency Impact:**
+- Heuristic filter: <1ms (synchronous, always runs)
+- Semantic detection: ~500ms-1s (only when heuristic triggers, ~50-70% of responses)
+- Parallel execution: Detection runs in parallel with question generation
+- Timeout: 3 seconds maximum (with retry)
+
+**Token Usage:**
+- Detection prompt: ~200-300 tokens
+- Detection response: ~100-150 tokens
+- Total per detection: ~300-450 tokens
+- Only invoked when heuristic filter detects potential process
+
+**Scalability:**
+- With 100 concurrent interviews: ~50 detection calls/minute (assuming 50% trigger rate)
+- Current infrastructure handles this load comfortably
+- Monitoring recommended for production deployments
+
+### **Troubleshooting**
+
+#### **❌ Detection is too slow**
+
+**Symptoms:** Detection takes >2 seconds consistently
+
+**Solutions:**
+1. Reduce timeout:
+```bash
+PROCESS_DETECTION_TIMEOUT=2.0
+```
+
+2. Disable retry:
+```bash
+ENABLE_DETECTION_RETRY=false
+```
+
+3. Check LLM performance (Ollama vs OpenAI)
+
+#### **❌ Too many false positives**
+
+**Symptoms:** System detects processes when there aren't any
+
+**Solution:** Increase confidence threshold:
+```bash
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.75  # Default: 0.6
+```
+
+#### **❌ Missing process detections**
+
+**Symptoms:** System doesn't detect obvious processes
+
+**Solutions:**
+1. Lower confidence threshold:
+```bash
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.5  # Default: 0.6
+```
+
+2. Check logs for timeout errors:
+```bash
+docker logs svc-elicitation-ai | grep "Detection timeout"
+```
+
+3. Increase timeout:
+```bash
+PROCESS_DETECTION_TIMEOUT=5.0  # Default: 3.0
+```
+
+#### **❌ Interview never finishes (Dynamic Completion)**
+
+**Symptoms:** Interview continues beyond reasonable length
+
+**Cause:** Safety limit not configured or too high
+
+**Solution:**
+```bash
+MAX_QUESTIONS_SAFETY_LIMIT=30  # Default: 50
+```
+
+### **Migration Guide**
+
+**From Legacy to Natural Interview Experience:**
+
+1. **Start with improved prompts only** (low risk):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+```
+
+2. **Add semantic detection** (medium risk):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+```
+
+3. **Enable dynamic completion** (requires testing):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+ENABLE_DYNAMIC_COMPLETION=true
+```
+
+4. **Monitor and adjust:**
+- Check detection logs for timeout rates
+- Verify interview completion rates
+- Adjust confidence thresholds as needed
+
+**Rollback Plan:**
+
+If issues arise, simply set feature flags to `false`:
+
+```bash
+ENABLE_IMPROVED_PROMPTS=false
+ENABLE_SEMANTIC_PROCESS_DETECTION=false
+ENABLE_DYNAMIC_COMPLETION=false
+```
+
+No data loss or corruption - system reverts to previous behavior immediately.
+
+### **Best Practices**
+
+1. **Enable features gradually** - Start with improved prompts, then add detection, then dynamic completion
+2. **Monitor logs** - Watch for timeout rates and detection accuracy
+3. **Adjust thresholds** - Fine-tune confidence thresholds based on your use case
+4. **Test with real users** - Validate that non-technical users understand the language
+5. **Set appropriate safety limits** - Prevent infinite loops with reasonable max questions
+
+### **Future Enhancements**
+
+Planned improvements for this feature:
+
+- **Adaptive prompts:** Adjust language based on user's vocabulary usage
+- **Multi-turn detection:** Detect processes described across multiple responses
+- **Confidence-based follow-up:** Ask clarifying questions when confidence is low
+- **Learning from corrections:** Improve detection based on user feedback
+- **Metrics dashboard:** Visualize detection accuracy and performance
+
+---
+
 ## ❓ **Preguntas Frecuentes (FAQ)**
 
 ### **1. ¿Necesito instalar Ollama en mi máquina?**

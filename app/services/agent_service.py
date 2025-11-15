@@ -349,7 +349,7 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
         
         # Determine if this should be the final question
         # Pass agent's question to detect closing signals
-        is_final = self._should_finish_interview(
+        is_final, completion_reason = self._should_finish_interview(
             question_number=question_number,
             context=interview_context,
             user_response=user_response,
@@ -372,7 +372,8 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
             context=interview_context,
             original_user_response=user_response,
             corrected_user_response=user_response,  # TODO: Add spell checking
-            process_matches=process_matches  # NEW: Include process matches
+            process_matches=process_matches,  # NEW: Include process matches
+            completion_reason=completion_reason  # NEW: Why it ended (for metrics)
         )
     
     def _build_context_aware_prompt(
@@ -397,40 +398,79 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
     
     def _mentions_process(self, text: str) -> bool:
         """
-        Detect if user response mentions a process (heuristic detection)
+        Detect if user response mentions a process (MULTI-LAYER HEURISTIC)
         
-        Uses simple keyword matching to determine if the user is likely
-        describing a business process. This is a lightweight check to
-        decide whether to invoke the process matching agent.
+        Layer 1: Expanded keyword matching to capture ANY potential process mention.
+        This is intentionally permissive - better to false positive here and let
+        semantic analysis (Layer 2) determine if it's really a process.
+        
+        Strategy: Cast a WIDE net - if there's ANY indication of process-related
+        content, return True to trigger semantic analysis.
         
         Args:
             text: User's response text
             
         Returns:
-            bool: True if text likely mentions a process
+            bool: True if text MIGHT mention a process (permissive threshold)
         """
+        if not text or len(text.strip()) < 3:
+            return False
+            
         # Convert to lowercase for case-insensitive matching
         text_lower = text.lower()
         
-        # Process-related keywords in multiple languages
+        # LAYER 1: EXPANDED KEYWORDS - Capture EVERYTHING that could be a process
+        # Goal: No false negatives - we'd rather trigger semantic analysis than miss a process
         process_keywords = [
-            # Spanish
+            # Spanish - Core process terms
             "proceso", "procedimiento", "flujo", "actividad", "tarea",
             "gestión", "administración", "manejo", "control", "operación",
             "aprobación", "autorización", "solicitud", "revisión",
-            # English
+            
+            # Spanish - Action verbs (expanded)
+            "hacer", "hago", "hacemos", "realizo", "realizamos", "ejecuto", "ejecutamos",
+            "trabajo", "trabajamos", "gestiono", "gestionamos", "manejo", "manejamos",
+            "administro", "administramos", "coordino", "coordinamos", "superviso", "supervisamos",
+            "organizo", "organizamos", "planifico", "planificamos",
+            
+            # Spanish - Contextual indicators
+            "cuando", "cada vez que", "todos los días", "semanalmente", "mensualmente",
+            "rutina", "diario", "frecuencia", "responsabilidad", "función",
+            "mi trabajo es", "me encargo de", "tengo que", "debo",
+            
+            # English - Core process terms  
             "process", "procedure", "workflow", "activity", "task",
             "management", "administration", "handling", "control", "operation",
             "approval", "authorization", "request", "review",
-            # Portuguese
+            
+            # English - Action verbs (expanded)
+            "do", "doing", "perform", "execute", "work on", "manage", "handle",
+            "administer", "coordinate", "supervise", "organize", "plan",
+            
+            # English - Contextual indicators
+            "when", "whenever", "every day", "daily", "weekly", "monthly",
+            "routine", "frequency", "responsibility", "my job is", "i handle", "i need to",
+            
+            # Portuguese - Core process terms
             "processo", "procedimento", "fluxo", "atividade", "tarefa",
             "gestão", "administração", "manuseio", "controle", "operação",
-            "aprovação", "autorização", "solicitação", "revisão"
+            "aprovação", "autorização", "solicitação", "revisão",
+            
+            # Portuguese - Action verbs (expanded)
+            "fazer", "faço", "fazemos", "realizo", "realizamos", "executo", "executamos",
+            "trabalho", "trabalhamos", "gerencio", "gerenciamos", "administro", "administramos",
+            "coordeno", "coordenamos", "supervisiono", "supervisionamos",
+            
+            # Portuguese - Contextual indicators
+            "quando", "toda vez que", "todos os dias", "diariamente", "semanalmente",
+            "rotina", "frequência", "responsabilidade", "função",
+            "meu trabalho é", "cuido de", "preciso", "devo"
         ]
         
         # Check if any keyword is present
         for keyword in process_keywords:
             if keyword in text_lower:
+                print(f"[DEBUG] Process mention detected (keyword: '{keyword}')")
                 return True
         
         return False
@@ -489,67 +529,125 @@ Basándote en la conversación anterior, formula tu próxima pregunta para profu
         context: InterviewContext,
         user_response: str,
         agent_question: str
-    ) -> bool:
+    ) -> tuple[bool, Optional[str]]:
         """
-        Determine if the interview should end
+        Determine if the interview should end - DYNAMIC COMPLETION
         
-        **Nueva estrategia - Delegar más al LLM**:
+        Returns:
+            Tuple of (should_finish: bool, reason: Optional[str])
         
-        La decisión de cuándo terminar está principalmente en el SYSTEM PROMPT del agente.
-        Esta función solo verifica límites absolutos y señales explícitas.
+        **NEW STRATEGY - Agent-Driven Completion (Feature: enable_dynamic_completion)**:
         
-        El agente (LLM) sabe cuándo terminar por el prompt:
-        - Cuando tiene información detallada de 2+ procesos
-        - Cuando el usuario pide terminar
-        - Cuando llegó al máximo de preguntas
+        When enable_dynamic_completion=True:
+        - NO MINIMUM questions enforced - agent decides based on content quality
+        - Agent uses professional judgment from system prompt
+        - Respects explicit user signals to finish immediately
+        - Only enforces SAFETY LIMIT to prevent infinite loops
+        
+        When enable_dynamic_completion=False (legacy):
+        - Uses old min/max questions logic
+        
+        The agent (LLM) knows when to finish per prompt:
+        - When has detailed information from 2+ processes
+        - When user wants to stop
+        - When reached safety limit
         
         Args:
             question_number: Current question number
-            context: Interview context (usado internamente, no expuesto)
+            context: Interview context (for future enhancements)
             user_response: Latest user response
             agent_question: The agent's generated question/response
             
         Returns:
             bool: True if interview should end
         """
-        # 1. LÍMITE ABSOLUTO: Máximo de preguntas
-        if question_number >= settings.max_questions:
-            print(f"[DEBUG] Ending interview: Max questions reached ({settings.max_questions})")
-            return True
-        
-        # 2. Usuario pide terminar EXPLÍCITAMENTE
-        end_keywords = {
-            "es": ["quiero terminar", "vamos a terminar", "terminemos", "finalizar la entrevista", "suficiente por hoy", "ya está bien", "nada más gracias"],
-            "en": ["let's finish", "i want to finish", "let's end this", "that's enough", "nothing more"],
-            "pt": ["vamos terminar", "quero terminar", "já chega", "é suficiente"]
-        }
-        
-        response_lower = user_response.lower()
-        for lang_keywords in end_keywords.values():
-            if any(keyword in response_lower for keyword in lang_keywords):
-                print(f"[DEBUG] Ending interview: User requested to finish")
-                return True
-        
-        # 3. SEÑAL DEL AGENTE: Detectar si el agente dice "gracias por tu tiempo" u otras frases de cierre
-        # Esto indica que el LLM decidió que ya tiene suficiente información
-        closing_signals = {
-            "es": ["gracias por tu tiempo", "muchas gracias", "quedó registrada", "la entrevista", "info quedó registrada"],
-            "en": ["thank you for your time", "thanks for your time", "has been recorded", "successfully recorded"],
-            "pt": ["obrigado pelo seu tempo", "foi registrada", "foi registrado"]
-        }
-        
-        question_lower = agent_question.lower()
-        for lang_signals in closing_signals.values():
-            if any(signal in question_lower for signal in lang_signals):
-                print(f"[DEBUG] Ending interview: Agent signaled completion")
-                return True
-        
-        # 4. MÍNIMO OBLIGATORIO: No terminar antes del mínimo
-        if question_number < settings.min_questions:
-            return False
-        
-        # 5. DEFAULT: Continuar (confiar en el criterio del agente expresado en el prompt)
-        return False
+        # Check if dynamic completion is enabled
+        if settings.enable_dynamic_completion:
+            # === DYNAMIC COMPLETION MODE ===
+            
+            # 1. SAFETY LIMIT: Absolute maximum to prevent infinite loops
+            if question_number >= settings.max_questions_safety_limit:
+                print(f"[DEBUG] Ending interview: Safety limit reached ({settings.max_questions_safety_limit})")
+                return True, "safety_limit"
+            
+            # 2. EXPLICIT USER SIGNALS: User wants to finish
+            end_keywords = {
+                "es": ["quiero terminar", "vamos a terminar", "terminemos", "finalizar", 
+                       "eso es todo", "no tengo más", "ya está", "suficiente", "nada más"],
+                "en": ["let's finish", "i want to finish", "that's all", "nothing more", 
+                       "i'm done", "that's enough", "let's end"],
+                "pt": ["vamos terminar", "quero terminar", "é tudo", "não tenho mais", 
+                       "já chega", "suficiente", "nada mais"]
+            }
+            
+            response_lower = user_response.lower()
+            for lang_keywords in end_keywords.values():
+                if any(keyword in response_lower for keyword in lang_keywords):
+                    print(f"[DEBUG] Ending interview: User explicitly requested to finish")
+                    return True, "user_requested"
+            
+            # 3. AGENT SIGNALS: Agent generated closing message
+            closing_signals = {
+                "es": ["gracias por tu tiempo", "muchas gracias", "quedó registrada", 
+                       "la entrevista", "info registrada", "perfecto, con eso"],
+                "en": ["thank you for your time", "thanks for your time", "has been recorded", 
+                       "successfully recorded", "perfect, with that"],
+                "pt": ["obrigado pelo seu tempo", "foi registrada", "foi registrado",
+                       "perfeito, com isso"]
+            }
+            
+            question_lower = agent_question.lower()
+            for lang_signals in closing_signals.values():
+                if any(signal in question_lower for signal in lang_signals):
+                    print(f"[DEBUG] Ending interview: Agent signaled completion")
+                    return True, "agent_signaled"
+            
+            # 4. NO MINIMUM - Agent decides based on content quality
+            # Trust the agent's judgment from system prompt
+            print(f"[DEBUG] Dynamic completion: Continue (Q{question_number}/{settings.max_questions_safety_limit})")
+            return False, None
+            
+        else:
+            # === LEGACY MODE (min/max questions) ===
+            
+            # 1. Maximum questions limit
+            if question_number >= settings.max_questions:
+                print(f"[DEBUG] Ending interview: Max questions reached ({settings.max_questions})")
+                return True, "max_questions"
+            
+            # 2. Explicit user signals
+            end_keywords = {
+                "es": ["quiero terminar", "vamos a terminar", "terminemos", "finalizar"],
+                "en": ["let's finish", "i want to finish", "that's enough"],
+                "pt": ["vamos terminar", "quero terminar", "já chega"]
+            }
+            
+            response_lower = user_response.lower()
+            for lang_keywords in end_keywords.values():
+                if any(keyword in response_lower for keyword in lang_keywords):
+                    print(f"[DEBUG] Ending interview: User requested to finish")
+                    return True, "user_requested"
+            
+            # 3. Agent closing signals
+            closing_signals = {
+                "es": ["gracias por tu tiempo", "muchas gracias", "quedó registrada"],
+                "en": ["thank you for your time", "has been recorded"],
+                "pt": ["obrigado pelo seu tempo", "foi registrada"]
+            }
+            
+            question_lower = agent_question.lower()
+            for lang_signals in closing_signals.values():
+                if any(signal in question_lower for signal in lang_signals):
+                    print(f"[DEBUG] Ending interview: Agent signaled completion")
+                    return True, "agent_signaled"
+            
+            # 4. Minimum questions enforcement (legacy)
+            if question_number < settings.min_questions:
+                print(f"[DEBUG] Continue: Below minimum ({question_number}/{settings.min_questions})")
+                return False, None
+            
+            # 5. Default: continue
+            return False, None
 
 
 # Global agent instance

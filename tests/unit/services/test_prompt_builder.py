@@ -133,9 +133,9 @@ class TestPromptBuilderBasicFunctionality:
         
         prompt = PromptBuilder.build_interview_prompt(context, language="invalid")
         
-        # Should contain Spanish text
+        # Should contain Spanish text with new accessible language
         assert "ROL Y PERSONALIDAD" in prompt
-        assert "Sos un" in prompt
+        assert "Soy tu asistente" in prompt
         assert "vos" in prompt
 
 
@@ -148,9 +148,9 @@ class TestPromptBuilderMultiLanguage:
         
         prompt = PromptBuilder.build_interview_prompt(context, language="es")
         
-        # Verify Spanish-specific content
+        # Verify Spanish-specific content with new accessible language
         assert "ROL Y PERSONALIDAD" in prompt
-        assert "Sos un" in prompt
+        assert "Soy tu asistente" in prompt
         assert "Agente ProssX" in prompt
         assert "vos" in prompt
         assert "onda argentina" in prompt
@@ -163,9 +163,9 @@ class TestPromptBuilderMultiLanguage:
         
         prompt = PromptBuilder.build_interview_prompt(context, language="en")
         
-        # Verify English-specific content
+        # Verify English-specific content with new accessible language
         assert "ROLE AND PERSONALITY" in prompt
-        assert "You are a" in prompt
+        assert "I'm your assistant" in prompt
         assert "ProssX Agent" in prompt
         assert "EMPLOYEE CONTEXT" in prompt
         assert "EXISTING PROCESSES" in prompt
@@ -176,9 +176,9 @@ class TestPromptBuilderMultiLanguage:
         
         prompt = PromptBuilder.build_interview_prompt(context, language="pt")
         
-        # Verify Portuguese-specific content
+        # Verify Portuguese-specific content with new accessible language
         assert "PAPEL E PERSONALIDADE" in prompt
-        assert "Você é um" in prompt
+        assert "Sou seu assistente" in prompt
         assert "Agente ProssX" in prompt
         assert "CONTEXTO DO FUNCIONÁRIO" in prompt
         assert "PROCESSOS EXISTENTES" in prompt

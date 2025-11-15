@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     enable_context_enrichment: bool = True
     enable_process_matching: bool = True
     
+    # Natural Interview Experience Feature Flags
+    enable_improved_prompts: bool = True
+    enable_semantic_process_detection: bool = True
+    enable_dynamic_completion: bool = True
+    enable_detection_retry: bool = True
+    
+    # Natural Interview Experience Configuration
+    process_detection_timeout: float = 3.0  # 3 seconds - increased for rigorous detection
+    process_detection_confidence_threshold: float = 0.6
+    max_questions_safety_limit: int = 50  # Safety limit to prevent infinite loops
+    
     # Context Service Configuration
     context_cache_ttl: int = 300  # 5 minutes in seconds
     process_matching_timeout: int = 10  # 10 seconds - increased for LLM response time
