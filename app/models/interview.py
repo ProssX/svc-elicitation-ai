@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional, Literal, Any
 from datetime import datetime
 from uuid import UUID
+from decimal import Decimal
 
 
 class ConversationMessage(BaseModel):
@@ -12,6 +13,89 @@ class ConversationMessage(BaseModel):
     role: Literal["user", "assistant", "system"] = Field(description="Message role")
     content: str = Field(description="Message content")
     timestamp: Optional[datetime] = Field(default=None, description="Message timestamp")
+
+
+class ProcessMatchResult(BaseModel):
+    """
+    Result of process matching analysis
+    
+    Represents the outcome of comparing a user's process description
+    against existing processes in the organization.
+    """
+    is_match: bool = Field(description="Whether a match was found")
+    matched_process_id: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the matched process (if match found)"
+    )
+    matched_process_name: Optional[str] = Field(
+        default=None,
+        description="Name of the matched process (if match found)"
+    )
+    confidence_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for the match (0.0 to 1.0)"
+    )
+    reasoning: str = Field(description="Explanation of why this match was or wasn't made")
+    suggested_clarifying_questions: List[str] = Field(
+        default_factory=list,
+        description="Questions to ask the user to confirm or clarify the match"
+    )
+    # NEW: Information about who originally reported this process
+    reported_by_employee_id: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the employee who first reported this process"
+    )
+    reported_by_name: Optional[str] = Field(
+        default=None,
+        description="Full name of the employee who first reported this process"
+    )
+    reported_by_role: Optional[str] = Field(
+        default=None,
+        description="Role of the employee who first reported this process"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "is_match": True,
+                "matched_process_id": "018e5f8b-3456-7890-abcd-123456789abc",
+                "matched_process_name": "Proceso de Aprobación de Compras",
+                "confidence_score": 0.85,
+                "reasoning": "El usuario mencionó 'aprobación de compras' que coincide con el proceso existente",
+                "suggested_clarifying_questions": [
+                    "¿Te refieres al proceso actual de aprobación de compras?",
+                    "¿Este proceso es diferente del que ya tenemos registrado?"
+                ]
+            }
+        }
+
+
+class ProcessMatchInfo(BaseModel):
+    """
+    Process match information for export data
+    
+    Simplified version of ProcessMatchResult for inclusion in interview exports.
+    Contains essential information about process references without internal details.
+    """
+    process_id: UUID = Field(description="UUID of the referenced process")
+    process_name: str = Field(description="Name of the referenced process")
+    is_new: bool = Field(description="Whether this is a newly identified process")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for the match (0.0 to 1.0)"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "process_id": "018e5f8b-3456-7890-abcd-123456789abc",
+                "process_name": "Proceso de Aprobación de Compras",
+                "is_new": False,
+                "confidence": 0.85
+            }
+        }
 
 
 class InterviewContext(BaseModel):
@@ -59,6 +143,7 @@ class InterviewResponse(BaseModel):
     - question_number
     - is_final
     - corrected_response (optional)
+    - process_matches (optional, NEW)
     
     The 'context' field is kept for internal logic but NOT returned to clients.
     """
@@ -73,6 +158,10 @@ class InterviewResponse(BaseModel):
     corrected_user_response: Optional[str] = Field(
         default=None,
         description="Spell-checked user response"
+    )
+    process_matches: List[ProcessMatchInfo] = Field(
+        default_factory=list,
+        description="List of process matches found during this interaction (NEW)"
     )
 
 
@@ -227,6 +316,8 @@ class InterviewExportData(BaseModel):
     - ✅ Full conversation history
     - ✅ Basic metrics (question count, duration)
     - ✅ User info (name, role, organization)
+    - ✅ Process references (NEW - processes discussed during interview)
+    - ✅ Context used (NEW - optional, for debugging/analysis)
     - ❌ NO completeness_score (internal metric removed)
     - ❌ NO process extraction (done by another service)
     """
@@ -242,6 +333,14 @@ class InterviewExportData(BaseModel):
     is_complete: bool = Field(description="Whether interview was completed (is_final=true)")
     conversation_history: List[ConversationMessage] = Field(
         description="Full conversation history (questions + answers)"
+    )
+    processes_referenced: List[ProcessMatchInfo] = Field(
+        default_factory=list,
+        description="List of processes referenced during the interview (NEW)"
+    )
+    context_used: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Context information used during the interview (NEW, optional)"
     )
     
     class Config:
@@ -268,7 +367,21 @@ class InterviewExportData(BaseModel):
                         "content": "Soy gerente de compras, apruebo solicitudes",
                         "timestamp": "2025-10-08T14:16:00Z"
                     }
-                ]
+                ],
+                "processes_referenced": [
+                    {
+                        "process_id": "018e5f8b-3456-7890-abcd-123456789abc",
+                        "process_name": "Proceso de Aprobación de Compras",
+                        "is_new": False,
+                        "confidence": 0.85
+                    }
+                ],
+                "context_used": {
+                    "employee_name": "Juan Pérez",
+                    "organization_name": "ProssX Demo",
+                    "roles": ["Gerente de Operaciones"],
+                    "existing_processes_count": 5
+                }
             }
         }
 

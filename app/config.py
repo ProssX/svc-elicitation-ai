@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     max_questions: int = 20
     default_completeness_threshold: float = 0.8
     
+    # Context Enrichment Feature Flags
+    enable_context_enrichment: bool = True
+    enable_process_matching: bool = True
+    
+    # Context Service Configuration
+    context_cache_ttl: int = 300  # 5 minutes in seconds
+    process_matching_timeout: int = 10  # 10 seconds - increased for LLM response time
+    max_processes_in_context: int = 20  # Maximum number of processes to include in context
+    
+    # Redis Event Bus
+    redis_url: str = "redis://localhost:6379"
+    worker_mode: bool = False
+    
     @field_validator('auth_service_url')
     @classmethod
     def validate_auth_service_url(cls, v: str) -> str:
