@@ -40,9 +40,9 @@ USER appuser
 # Expose port (default 8002, can be overridden by APP_PORT env var)
 EXPOSE 8002
 
-# Health check
+# Health check (uses APP_PORT env var, defaults to 8002)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8002/api/v1/health')"
+    CMD python -c "import os, requests; port = os.getenv('APP_PORT', '8002'); requests.get(f'http://localhost:{port}/api/v1/health')"
 
 # Run application
 # Port is configured via APP_PORT environment variable (default: 8002)
