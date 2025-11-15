@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY prompts/ ./prompts/
 COPY data/ ./data/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./alembic.ini
+COPY pytest.ini ./pytest.ini
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \

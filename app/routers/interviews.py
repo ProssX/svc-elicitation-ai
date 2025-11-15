@@ -5,7 +5,7 @@ Handles all interview-related endpoints
 import uuid
 from datetime import datetime
 from typing import Optional, Literal
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.interview import (
@@ -31,6 +31,52 @@ from app.models.permissions import InterviewPermission
 from uuid import UUID
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
+
+
+def get_auth_token(authorization: Optional[str] = Header(None)) -> str:
+    """
+    Extract Bearer token from Authorization header
+    
+    Args:
+        authorization: Authorization header value
+        
+    Returns:
+        Raw JWT token string
+        
+    Raises:
+        HTTPException: If authorization header is missing or invalid
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "status": "error",
+                "code": 401,
+                "message": "Authentication required",
+                "errors": [{
+                    "field": "authorization",
+                    "error": "Missing authorization header"
+                }]
+            }
+        )
+    
+    # Extract token from "Bearer <token>" format
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "status": "error",
+                "code": 401,
+                "message": "Invalid authorization header",
+                "errors": [{
+                    "field": "authorization",
+                    "error": "Authorization header must be in format: Bearer <token>"
+                }]
+            }
+        )
+    
+    return parts[1]
 
 
 @router.get("/permissions", response_model=None)
@@ -161,12 +207,14 @@ async def start_interview(
     request: StartInterviewRequest,
     current_user: TokenPayload = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    auth_token: str = Depends(get_auth_token),
     _: None = Depends(require_permission(InterviewPermission.CREATE))
 ):
     """
-    Start a new interview session
+    Start a new interview session with context enrichment
     
-    Creates a new interview session and returns the first question.
+    Creates a new interview session with enriched context from backend services
+    and returns the first question.
     
     **Authentication Required:** Bearer token in Authorization header
     
@@ -195,7 +243,12 @@ async def start_interview(
       "meta": {
         "user_name": "User's name",
         "organization": "Organization name",
-        "language": "es"  // ⚠️ IMPORTANT: Persist this for /continue requests
+        "language": "es",
+        "context": {
+          "processes_count": 5,
+          "previous_interviews": 2,
+          "roles": ["Gerente de Operaciones"]
+        }
       }
     }
     ```
@@ -217,6 +270,7 @@ async def start_interview(
         ]
       }
       ```
+    - 404: Employee not found or context unavailable
     - 500: Server error
     
     **⚠️ IMPORTANT for Frontend:**
@@ -224,44 +278,61 @@ async def start_interview(
     - Send interview_id in EVERY `/continue` request
     - Backend persists interview data in PostgreSQL automatically
     
-    **Note:** The `context` field (processes_identified, completeness, etc.) 
-    has been removed as it's only used internally by the agent.
+    **Context Enrichment:**
+    - Fetches employee profile, roles, and organization details
+    - Retrieves existing processes in the organization
+    - Loads previous interview history
+    - Gracefully degrades if backend services are unavailable
     """
     try:
-        # Get context service
-        context_service = get_context_service()
-        
-        # Get user context using authenticated user_id from token
-        user_context = await context_service.get_user_context(current_user.user_id)
-        
-        # Get agent
-        agent = get_agent()
-        
-        # Start interview with language support (maintain existing logic)
-        interview_response = agent.start_interview(
-            user_name=user_context.get("name", "Usuario"),
-            user_role=user_context.get("role", "Empleado"),
-            organization=user_context.get("organization", "Organización"),
-            technical_level=user_context.get("technical_level", "unknown"),
-            language=request.language
-        )
-        
-        # Persist interview in database (NEW)
+        # Persist interview in database with context enrichment
         interview_service = InterviewService(db)
         interview, first_message = await interview_service.start_interview(
             employee_id=UUID(current_user.user_id),
+            organization_id=current_user.organization_id,
             language=request.language,
-            technical_level=user_context.get("technical_level", "unknown"),
-            first_question=interview_response.question
+            technical_level="unknown",  # Can be enhanced later
+            auth_token=auth_token
         )
+        
+        # Get context service for user info (for response metadata)
+        context_service = get_context_service()
+        user_context = await context_service.get_user_context(current_user.user_id)
         
         # Prepare response data with interview_id from database
         data = {
-            "interview_id": str(interview.id_interview),  # NEW: Return database interview_id
-            "question": interview_response.question,
-            "question_number": interview_response.question_number,
-            "is_final": interview_response.is_final
+            "interview_id": str(interview.id_interview),
+            "question": first_message.content,
+            "question_number": 1,
+            "is_final": False
         }
+        
+        # Build context metadata for response
+        context_meta = {
+            "processes_count": 0,  # Will be populated if context was loaded
+            "previous_interviews": 0,
+            "roles": []
+        }
+        
+        # Try to get context info for metadata (non-blocking)
+        try:
+            from app.services.context_enrichment_service import ContextEnrichmentService
+            context_enrichment = ContextEnrichmentService()
+            context_data = await context_enrichment.get_full_interview_context(
+                employee_id=UUID(current_user.user_id),
+                organization_id=current_user.organization_id,
+                auth_token=auth_token,
+                db=db
+            )
+            context_meta = {
+                "processes_count": len(context_data.organization_processes),
+                "previous_interviews": context_data.interview_history.total_interviews,
+                "roles": [role.name for role in context_data.employee.roles]
+            }
+        except Exception as ctx_err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load context metadata for response: {str(ctx_err)}")
         
         return success_response(
             data=data,
@@ -269,15 +340,27 @@ async def start_interview(
             meta={
                 "user_name": user_context.get("name"),
                 "organization": user_context.get("organization"),
-                "language": request.language  # Include language for persistence
+                "language": request.language,
+                "context": context_meta
             }
         )
         
+    except ValueError as ve:
+        # Handle employee not found or context unavailable
+        error_msg = str(ve)
+        if "not found" in error_msg.lower() or "unavailable" in error_msg.lower():
+            return error_response(
+                message="Employee not found or context unavailable",
+                code=404,
+                errors=[{"field": "employee_id", "error": error_msg}]
+            )
+        raise ve
     except Exception as e:
         import traceback
+        import logging
+        logger = logging.getLogger(__name__)
         error_detail = traceback.format_exc()
-        print(f"[ERROR] Exception in start_interview:")
-        print(error_detail)
+        logger.error(f"Exception in start_interview: {error_detail}")
         return error_response(
             message=f"Failed to start interview: {str(e)}",
             code=500,
@@ -290,13 +373,15 @@ async def continue_interview(
     request: ContinueInterviewRequest,
     current_user: TokenPayload = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    auth_token: str = Depends(get_auth_token),
     _: None = Depends(require_permission(InterviewPermission.CREATE))
 ):
     """
-    Continue an ongoing interview
+    Continue an ongoing interview with process matching
     
     Receives user's response and returns the next question. The backend automatically loads
-    the conversation history from the database, so you only need to send the minimal payload.
+    the conversation history from the database and performs process matching if the user
+    mentions a process.
     
     **Authentication Required:** Bearer token in Authorization header
     
@@ -349,14 +434,23 @@ async def continue_interview(
         "question": "Agent's next question",
         "question_number": 2,
         "is_final": false,
-        "corrected_response": "User's response (spell-checked)"
+        "corrected_response": "User's response (spell-checked)",
+        "process_matches": [
+          {
+            "process_id": "018e5f8b-3456-7890-abcd-123456789abc",
+            "process_name": "Proceso de Aprobación de Compras",
+            "is_new": false,
+            "confidence": 0.85
+          }
+        ]
       },
       "errors": null,
       "meta": {
         "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
         "session_id": null,
         "question_count": 2,
-        "language": "es"
+        "language": "es",
+        "process_matching_enabled": true
       }
     }
     ```
@@ -538,38 +632,14 @@ async def continue_interview(
                     )
                     return JSONResponse(status_code=403, content=error_resp.model_dump())
         
-        # Get context service
-        context_service = get_context_service()
-        
-        # Get user context using authenticated user_id from token
-        user_context = await context_service.get_user_context(current_user.user_id)
-        
-        # Load conversation history from database (NEW: optimization)
-        messages = await interview_service.message_repo.get_by_interview(request.interview_id)
-        conversation_history = convert_messages_to_conversation_history(messages)
-        
-        # Get agent
-        agent = get_agent()
-        
-        # Continue interview with language support (using history from DB, not request)
-        interview_response = agent.continue_interview(
-            user_response=request.user_response,
-            conversation_history=conversation_history,  # CHANGED: Load from DB instead of request
-            user_name=user_context.get("name", "Usuario"),
-            user_role=user_context.get("role", "Empleado"),
-            organization=user_context.get("organization", "Organización"),
-            technical_level=user_context.get("technical_level", "unknown"),
-            language=request.language
-        )
-        
-        # Persist in database
+        # Continue interview with context and process matching (service handles everything)
         try:
             interview, user_message, agent_message = await interview_service.continue_interview(
                 interview_id=request.interview_id,
                 employee_id=UUID(current_user.user_id) if not current_user.has_permission(InterviewPermission.READ_ALL) else UUID(str(interview.employee_id)),
                 user_response=request.user_response,
-                agent_question=interview_response.question,
-                is_final=interview_response.is_final
+                auth_token=auth_token,
+                organization_id=current_user.organization_id
             )
         except ValueError as ve:
             # Handle interview not found or access denied
@@ -588,31 +658,69 @@ async def continue_interview(
                 )
             else:
                 raise ve
+        except TimeoutError as te:
+            # Handle process matching timeout gracefully
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Process matching timeout for interview {request.interview_id}: {str(te)}")
+            # Continue without process matching results
         
-        # Prepare response data (simplified, no internal context exposed)
+        # Get process matches from the interview service
+        # The service stores them in the database, we need to retrieve them
+        process_matches = []
+        try:
+            process_refs = await interview_service.process_ref_repo.get_by_interview(request.interview_id)
+            # Get the most recent process references (from this interaction)
+            # Filter by those created in the last few seconds
+            from datetime import timedelta
+            recent_cutoff = datetime.utcnow() - timedelta(seconds=10)
+            recent_refs = [ref for ref in process_refs if ref.created_at >= recent_cutoff]
+            
+            for ref in recent_refs:
+                process_matches.append({
+                    "process_id": str(ref.process_id),
+                    "process_name": "Process",  # Name not stored in ref, would need to fetch
+                    "is_new": ref.is_new_process,
+                    "confidence": float(ref.confidence_score) if ref.confidence_score else 0.0
+                })
+        except Exception as pm_err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to retrieve process matches: {str(pm_err)}")
+        
+        # Calculate question number from message sequence
+        question_number = (agent_message.sequence_number + 1) // 2
+        
+        # Check if this is the final question (interview completed)
+        is_final = (interview.status.value == "completed")
+        
+        # Prepare response data with process match info
         data = {
-            "question": interview_response.question,
-            "question_number": interview_response.question_number,
-            "is_final": interview_response.is_final,
-            "corrected_response": interview_response.corrected_user_response
+            "question": agent_message.content,
+            "question_number": question_number,
+            "is_final": is_final,
+            "corrected_response": None,  # Not implemented yet
+            "process_matches": process_matches
         }
         
         return success_response(
             data=data,
             message="Question generated successfully",
             meta={
-                "interview_id": request.interview_id,  # Include interview_id from database
-                "session_id": request.session_id,      # Keep for compatibility
-                "question_count": interview_response.question_number,
-                "language": request.language
+                "interview_id": str(request.interview_id),
+                "session_id": request.session_id,
+                "question_count": question_number,
+                "language": request.language,
+                "process_matching_enabled": True
             }
         )
         
     except Exception as e:
         import traceback
+        import logging
+        logger = logging.getLogger(__name__)
         error_detail = traceback.format_exc()
-        print(f"[ERROR] Exception in continue_interview:")
-        print(error_detail)
+        logger.error(f"Exception in continue_interview: {error_detail}")
         return error_response(
             message="Failed to continue interview",
             code=500,
@@ -1148,12 +1256,13 @@ async def export_interview(
     request: ExportInterviewFromDBRequest,
     current_user: TokenPayload = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    auth_token: str = Depends(get_auth_token),
     _: None = Depends(require_permission(InterviewPermission.EXPORT))
 ):
     """
-    Export raw interview data from database (NO AI analysis)
+    Export raw interview data from database with process references and context
     
-    **UPDATED:** Now retrieves interview data from database instead of request body.
+    **UPDATED:** Now includes process references and context information used during the interview.
     
     **Authentication Required:** Bearer token in Authorization header
     
@@ -1177,6 +1286,8 @@ async def export_interview(
     - ✅ Full conversation history (questions + answers) from database
     - ✅ User info (name, role, organization) from context service
     - ✅ Interview metrics (total questions, duration) calculated from DB data
+    - ✅ Process references (NEW - processes discussed during interview)
+    - ✅ Context used (NEW - employee, organization, roles information)
     - ✅ Timestamps and interview info from database
     - ❌ NO completeness_score (internal metric, removed)
     - ❌ NO process extraction (done by another service)
@@ -1189,14 +1300,31 @@ async def export_interview(
       "message": "Interview data exported successfully",
       "data": {
         "session_id": null,
+        "user_id": "01932e5f-8b2a-7890-b123-456789abcdef",
         "user_name": "Juan Pérez",
+        "user_role": "Gerente de Operaciones",
+        "organization": "ProssX Demo",
         "conversation_history": [...],
         "total_questions": 8,
         "total_user_responses": 8,
         "is_complete": true,
         "interview_id": "018e5f8b-1234-7890-abcd-123456789abc",
         "interview_date": "2025-10-25T10:00:00Z",
-        "interview_duration_minutes": 15
+        "interview_duration_minutes": 15,
+        "processes_referenced": [
+          {
+            "process_id": "018e5f8b-3456-7890-abcd-123456789abc",
+            "process_name": "Proceso de Aprobación de Compras",
+            "is_new": false,
+            "confidence": 0.85
+          }
+        ],
+        "context_used": {
+          "employee_name": "Juan Pérez",
+          "organization_name": "ProssX Demo",
+          "roles": ["Gerente de Operaciones"],
+          "existing_processes_count": 5
+        }
       },
       "errors": null,
       "meta": {
@@ -1265,9 +1393,72 @@ async def export_interview(
             allow_cross_user=has_read_all
         )
         
-        # Get context service for user info
-        context_service = get_context_service()
-        user_context = await context_service.get_user_context(current_user.user_id)
+        # Get context enrichment service to fetch employee and organization details
+        from app.services.context_enrichment_service import ContextEnrichmentService
+        context_enrichment = ContextEnrichmentService()
+        
+        # Fetch context for the interview's employee
+        employee_context = None
+        context_used = None
+        try:
+            full_context = await context_enrichment.get_full_interview_context(
+                employee_id=UUID(interview_with_messages.employee_id),
+                organization_id=interview_with_messages.organization_id if hasattr(interview_with_messages, 'organization_id') else current_user.organization_id,
+                auth_token=auth_token,
+                db=db
+            )
+            employee_context = full_context.employee
+            
+            # Build context_used summary
+            context_used = {
+                "employee_name": employee_context.full_name,
+                "organization_name": employee_context.organization_name,
+                "roles": [role.name for role in employee_context.roles],
+                "existing_processes_count": len(full_context.organization_processes)
+            }
+        except Exception as ctx_err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load context for export: {str(ctx_err)}")
+            # Continue with basic context from context service
+            context_service = get_context_service()
+            user_context = await context_service.get_user_context(interview_with_messages.employee_id)
+            employee_context = None
+            context_used = {
+                "employee_name": user_context.get("name", "Usuario"),
+                "organization_name": user_context.get("organization", "Organización"),
+                "roles": [user_context.get("role", "Empleado")],
+                "existing_processes_count": 0
+            }
+        
+        # Get process references for this interview
+        process_matches = []
+        try:
+            process_refs = await interview_service.process_ref_repo.get_by_interview(interview_uuid)
+            
+            # For each process reference, try to get the process name from backend
+            for ref in process_refs:
+                process_name = "Unknown Process"
+                try:
+                    # Try to get process details from backend
+                    from app.clients.backend_client import BackendClient
+                    backend_client = BackendClient()
+                    # Note: We would need a method to get process by ID
+                    # For now, use a placeholder
+                    process_name = f"Process {ref.process_id}"
+                except Exception:
+                    pass
+                
+                process_matches.append({
+                    "process_id": str(ref.process_id),
+                    "process_name": process_name,
+                    "is_new": ref.is_new_process,
+                    "confidence": float(ref.confidence_score) if ref.confidence_score else 0.0
+                })
+        except Exception as pm_err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to retrieve process references for export: {str(pm_err)}")
         
         # Convert database messages to conversation history format
         conversation_history = []
@@ -1288,19 +1479,26 @@ async def export_interview(
             duration = (interview_with_messages.completed_at - interview_with_messages.started_at).total_seconds() / 60
             interview_duration_minutes = int(duration)
         
-        # Create export data (modified to include interview_id and use DB data)
+        # Get user info for export
+        user_name = context_used["employee_name"] if context_used else "Usuario"
+        user_role = ", ".join(context_used["roles"]) if context_used and context_used["roles"] else "Empleado"
+        organization = context_used["organization_name"] if context_used else "Organización"
+        
+        # Create export data with process references and context
         export_data = InterviewExportData(
             session_id=None,  # No session_id for DB-persisted interviews
-            user_id=current_user.user_id,
-            user_name=user_context.get("name", "Usuario"),
-            user_role=user_context.get("role", "Empleado"),
-            organization=user_context.get("organization", "Organización"),
+            user_id=interview_with_messages.employee_id,
+            user_name=user_name,
+            user_role=user_role,
+            organization=organization,
             interview_date=interview_with_messages.started_at,
             interview_duration_minutes=interview_duration_minutes,
             total_questions=total_questions,
             total_user_responses=total_user_responses,
             is_complete=(interview_with_messages.status == "completed"),
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
+            processes_referenced=process_matches,
+            context_used=context_used
         )
         
         # Add interview_id to export data (extend the model data)
@@ -1312,7 +1510,7 @@ async def export_interview(
         logger = logging.getLogger(__name__)
         logger.info(
             f"Interview {request.interview_id} exported by user {current_user.user_id} "
-            f"at {datetime.utcnow().isoformat()}"
+            f"at {datetime.utcnow().isoformat()} with {len(process_matches)} process references"
         )
         
         return success_response(
@@ -1323,7 +1521,8 @@ async def export_interview(
                 "export_date": datetime.utcnow().isoformat(),
                 "language": interview_with_messages.language,
                 "technical_level": interview_with_messages.technical_level,
-                "data_source": "database"
+                "data_source": "database",
+                "process_references_count": len(process_matches)
             }
         )
         

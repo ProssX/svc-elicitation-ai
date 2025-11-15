@@ -1,5 +1,4 @@
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:17.6-alpine
     container_name: postgres-elicitation
@@ -19,21 +18,17 @@ services:
       retries: 5
       start_period: 10s
 
-  # Ollama service (Local LLM)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama-service
+  redis:
+    image: redis:7-alpine
+    container_name: redis-elicitation
     ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
+      - "6379:6379"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   elicitation-ai:
     build:
@@ -75,23 +70,26 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
       
-      # Ollama (only if MODEL_PROVIDER=local)
-      # Use the service name as hostname
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3.2:3b
-      
       # Interview Configuration
       - MIN_QUESTIONS=${MIN_QUESTIONS:-7}
       - MAX_QUESTIONS=${MAX_QUESTIONS:-20}
+      
+      # Context Enrichment
+      - ENABLE_CONTEXT_ENRICHMENT=${ENABLE_CONTEXT_ENRICHMENT:-true}
+      - ENABLE_PROCESS_MATCHING=${ENABLE_PROCESS_MATCHING:-true}
+      - CONTEXT_CACHE_TTL=${CONTEXT_CACHE_TTL:-300}
+      
+      # Redis
+      - REDIS_URL=redis://redis:6379
+      - WORKER_MODE=false
     
     volumes:
-      # Mount data directory for mock users
       - ./data:/app/data:ro
     
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
+      redis:
         condition: service_healthy
     
     restart: unless-stopped
@@ -103,11 +101,34 @@ services:
       retries: 3
       start_period: 40s
 
-# Volumes for persistent data
+  elicitation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: svc-elicitation-worker
+    command: python -m app.workers.process_extraction_worker
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/elicitation_ai
+      - BACKEND_PHP_URL=${BACKEND_PHP_URL:-http://host.docker.internal:8000/api/v1}
+      - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://host.docker.internal:8001}
+      - REDIS_URL=redis://redis:6379
+      - WORKER_MODE=true
+      - MODEL_PROVIDER=${MODEL_PROVIDER:-local}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elicitation-ai:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres-data:
-    driver: local
-  ollama-data:
     driver: local
 
 # Networks configuration
@@ -115,24 +136,3 @@ networks:
   default:
     name: svc-users-python_svc-users-network
     external: true
-
-# Usage:
-# 1. Start services:
-#    docker-compose up -d
-#
-# 2. Pull Ollama model (first time only):
-#    docker exec -it ollama-service ollama pull llama3.2:3b
-#
-# 3. Run database migrations (first time only):
-#    docker exec -it svc-elicitation-ai python -m alembic upgrade head
-#
-# 4. View logs:
-#    docker-compose logs -f elicitation-ai
-#    docker-compose logs -f ollama
-#    docker-compose logs -f postgres
-#
-# 5. Stop services:
-#    docker-compose down
-#
-# 6. Stop and remove volumes (WARNING: deletes Ollama models and database data):
-#    docker-compose down -v

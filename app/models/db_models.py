@@ -2,7 +2,7 @@
 Database Models for Interview Persistence
 SQLAlchemy ORM models for storing interviews and messages in PostgreSQL
 """
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Index, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Index, Enum as SQLEnum, Boolean, Numeric, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
@@ -135,6 +135,13 @@ class Interview(Base):
         lazy="selectin"
     )
     
+    process_references = relationship(
+        "InterviewProcessReference",
+        back_populates="interview",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    
     def __repr__(self):
         return f"<Interview(id={self.id_interview}, employee_id={self.employee_id}, status={self.status})>"
 
@@ -208,3 +215,86 @@ class InterviewMessage(Base):
     
     def __repr__(self):
         return f"<InterviewMessage(id={self.id_message}, interview_id={self.interview_id}, role={self.role}, seq={self.sequence_number})>"
+
+
+class InterviewProcessReference(Base):
+    """
+    Interview Process Reference entity - links interviews to processes
+    
+    Tracks which processes were discussed or identified during interviews:
+    - Process association (logical reference to svc-organizations-php)
+    - Whether the process was newly identified or existing
+    - Confidence score for process matching
+    - Timestamps for tracking
+    """
+    __tablename__ = "interview_process_reference"
+    
+    # Primary Key - UUID v7 for time-ordered IDs (or uuid4 for Python < 3.12)
+    id_reference = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid_generate,
+        comment="Unique process reference identifier (UUID v7 or v4)"
+    )
+    
+    # Foreign Key to Interview with CASCADE delete
+    interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey('interview.id_interview', ondelete='CASCADE'),
+        nullable=False,
+        comment="Reference to parent interview"
+    )
+    
+    # Foreign Key to Process (logical reference, no physical FK)
+    # Process table is in svc-organizations-php database
+    process_id = Column(
+        UUID(as_uuid=True),
+        nullable=False,
+        comment="Logical reference to process in svc-organizations-php"
+    )
+    
+    # Process Reference Metadata
+    is_new_process = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="Whether this was a newly identified process"
+    )
+    
+    confidence_score = Column(
+        Numeric(3, 2),
+        nullable=True,
+        comment="Process match confidence score (0.00 to 1.00)"
+    )
+    
+    # Timestamps
+    mentioned_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        comment="When the process was mentioned in the interview"
+    )
+    
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        comment="Record creation timestamp"
+    )
+    
+    # Relationships
+    interview = relationship(
+        "Interview",
+        back_populates="process_references"
+    )
+    
+    # Constraints and Indexes
+    __table_args__ = (
+        UniqueConstraint('interview_id', 'process_id', name='unique_interview_process'),
+        Index('idx_interview_process_interview', 'interview_id'),
+        Index('idx_interview_process_process', 'process_id'),
+        {'comment': 'Process references linked to interviews'}
+    )
+    
+    def __repr__(self):
+        return f"<InterviewProcessReference(id={self.id_reference}, interview_id={self.interview_id}, process_id={self.process_id}, is_new={self.is_new_process})>"

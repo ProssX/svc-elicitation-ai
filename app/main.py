@@ -32,6 +32,18 @@ async def lifespan(app: FastAPI):
     if not db_connected:
         logger.warning("⚠️  Database connection failed - application will start but database operations will fail")
     
+    # Log feature flag states
+    logger.info("=" * 60)
+    logger.info("Feature Flags Configuration:")
+    logger.info(f"  Context Enrichment: {'ENABLED' if settings.enable_context_enrichment else 'DISABLED'}")
+    logger.info(f"  Process Matching: {'ENABLED' if settings.enable_process_matching else 'DISABLED'}")
+    if settings.enable_context_enrichment:
+        logger.info(f"  Context Cache TTL: {settings.context_cache_ttl}s")
+        logger.info(f"  Max Processes in Context: {settings.max_processes_in_context}")
+    if settings.enable_process_matching:
+        logger.info(f"  Process Matching Timeout: {settings.process_matching_timeout}s")
+    logger.info("=" * 60)
+    
     yield
     
     # Shutdown
