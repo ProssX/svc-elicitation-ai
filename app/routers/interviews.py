@@ -895,6 +895,233 @@ async def list_interviews(
         )
 
 
+@router.get("/employees/{employee_id}", response_model=None)
+async def list_interviews_by_employee(
+    employee_id: str,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_permission(InterviewPermission.READ)),
+    status: Optional[Literal["in_progress", "completed", "cancelled"]] = Query(
+        None, 
+        description="Filter by interview status"
+    ),
+    language: Optional[Literal["es", "en", "pt"]] = Query(
+        None, 
+        description="Filter by interview language"
+    ),
+    start_date: Optional[datetime] = Query(
+        None, 
+        description="Filter interviews started after this date (ISO format)"
+    ),
+    end_date: Optional[datetime] = Query(
+        None, 
+        description="Filter interviews started before this date (ISO format)"
+    ),
+    page: int = Query(
+        1, 
+        ge=1, 
+        description="Page number (1-indexed)"
+    ),
+    page_size: int = Query(
+        20, 
+        ge=1, 
+        le=100, 
+        description="Number of items per page (max 100)"
+    )
+):
+    """
+    List interviews for a specific employee
+    
+    Retrieves a paginated list of interviews for a specific employee within the organization.
+    
+    **Authentication Required:** Bearer token in Authorization header
+    
+    **Required Permission:** `interviews:read`
+    
+    **Path Parameters:**
+    - employee_id: UUID of the employee whose interviews to retrieve
+    
+    **Query Parameters:**
+    - status: Filter by interview status (in_progress, completed, cancelled)
+    - language: Filter by interview language (es, en, pt)
+    - start_date: Filter interviews started after this date (ISO format)
+    - end_date: Filter interviews started before this date (ISO format)
+    - page: Page number (default: 1, min: 1)
+    - page_size: Items per page (default: 20, min: 1, max: 100)
+    
+    **Authorization:**
+    - Regular users (`interviews:read`) can only access their own interviews
+    - Admins/Managers (`interviews:read_all`) can access any employee's interviews in their organization
+    - Returns 403 if regular user tries to access another employee's interviews
+    - Results are filtered to only show interviews from the user's organization
+    
+    **Use Cases:**
+    - Employee checks their own interviews: `GET /interviews/employees/{their_own_id}`
+    - Manager reviews employee's interviews: `GET /interviews/employees/{employee_id}` (requires `interviews:read_all`)
+    
+    **Response Structure:**
+    ```json
+    {
+      "status": "success",
+      "code": 200,
+      "message": "Interviews retrieved successfully",
+      "data": [
+        {
+          "id_interview": "018e5f8b-1234-7890-abcd-123456789abc",
+          "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+          "language": "es",
+          "technical_level": "intermediate",
+          "status": "completed",
+          "started_at": "2025-10-25T10:00:00Z",
+          "completed_at": "2025-10-25T10:15:00Z",
+          "total_messages": 12
+        }
+      ],
+      "errors": null,
+      "meta": {
+        "pagination": {
+          "total_items": 5,
+          "total_pages": 1,
+          "current_page": 1,
+          "page_size": 20
+        },
+        "filters": {
+          "status": null,
+          "language": null,
+          "start_date": null,
+          "end_date": null
+        },
+        "employee_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+        "organization_id": "01932e5f-8b2a-7890-b123-456789abcdef",
+        "is_own_interviews": true
+      }
+    }
+    ```
+    
+    **Example Requests:**
+    - GET /interviews/employees/01932e5f-8b2a-7890-b123-456789abcdef - All interviews for employee
+    - GET /interviews/employees/01932e5f-8b2a-7890-b123-456789abcdef?status=in_progress - Pending interviews
+    - GET /interviews/employees/01932e5f-8b2a-7890-b123-456789abcdef?status=completed - Completed interviews
+    - GET /interviews/employees/01932e5f-8b2a-7890-b123-456789abcdef?page=2 - Page 2
+    
+    **Error Responses:**
+    - 400: Invalid employee_id format or query parameters
+    - 401: Missing or invalid authentication token
+    - 403: Access denied (trying to access another employee's interviews without `interviews:read_all`)
+      ```json
+      {
+        "status": "error",
+        "code": 403,
+        "message": "Access denied",
+        "errors": [
+          {
+            "field": "employee_id",
+            "error": "You can only access your own interviews. Admins with 'interviews:read_all' permission can access any employee's interviews."
+          }
+        ]
+      }
+      ```
+    - 500: Database error
+    """
+    try:
+        # Validate employee_id format
+        try:
+            employee_uuid = UUID(employee_id)
+        except ValueError:
+            return error_response(
+                message="Validation error",
+                code=400,
+                errors=[{"field": "employee_id", "error": "Invalid UUID format"}]
+            )
+        
+        # Authorization check: Regular users can only access their own interviews
+        # Admins with read_all can access any employee's interviews
+        has_read_all = current_user.has_permission(InterviewPermission.READ_ALL)
+        is_own_interviews = (str(employee_uuid) == current_user.user_id)
+        
+        if not is_own_interviews and not has_read_all:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"User {current_user.user_id} attempted to access interviews for employee {employee_id} "
+                f"without proper permissions"
+            )
+            error_resp = error_response(
+                message="Access denied",
+                code=403,
+                errors=[{
+                    "field": "employee_id",
+                    "error": "You can only access your own interviews. Admins with 'interviews:read_all' permission can access any employee's interviews."
+                }]
+            )
+            return JSONResponse(status_code=403, content=error_resp.model_dump())
+        
+        # Create filter and pagination objects
+        filters = InterviewFilters(
+            status=status,
+            language=language,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        pagination = PaginationParams(
+            page=page,
+            page_size=page_size
+        )
+        
+        # Get interview service
+        interview_service = InterviewService(db)
+        
+        # Get interviews for the specific employee within the organization
+        interviews, pagination_meta = await interview_service.list_interviews_by_employee(
+            employee_id=employee_uuid,
+            organization_id=current_user.organization_id,
+            filters=filters,
+            pagination=pagination
+        )
+        
+        # Convert to dict for response
+        interviews_data = [interview.model_dump() for interview in interviews]
+        
+        return success_response(
+            data=interviews_data,
+            message="Interviews retrieved successfully",
+            meta={
+                "pagination": pagination_meta.model_dump(),
+                "filters": {
+                    "status": status,
+                    "language": language,
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None
+                },
+                "employee_id": employee_id,
+                "organization_id": current_user.organization_id,
+                "is_own_interviews": is_own_interviews
+            }
+        )
+        
+    except ValueError as ve:
+        # Handle validation errors
+        return error_response(
+            message="Validation error",
+            code=400,
+            errors=[{"field": "query_params", "error": str(ve)}]
+        )
+    except Exception as e:
+        # Log the full error for debugging
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error in list_interviews_by_employee: {str(e)}", exc_info=True)
+        
+        # Return generic error response
+        return error_response(
+            message="Failed to retrieve interviews",
+            code=500,
+            errors=[{"field": "general", "error": "An internal error occurred while retrieving interviews"}]
+        )
+
+
 @router.get("/{interview_id}", response_model=None)
 async def get_interview(
     interview_id: str,

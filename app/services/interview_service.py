@@ -175,9 +175,10 @@ class InterviewService:
         if language_lower not in ["es", "en", "pt"]:
             raise ValueError(f"Invalid language: {language}. Must be one of: es, en, pt")
         
-        # Create Interview record
+        # Create Interview record with organization_id
         interview = Interview(
             employee_id=employee_id,
+            organization_id=UUID(organization_id) if organization_id else None,
             language=language_lower,
             technical_level=technical_level,
             status=InterviewStatusEnum.in_progress,
@@ -683,6 +684,73 @@ class InterviewService:
                 page=pagination.page,
                 page_size=pagination.page_size
             )
+        
+        # Ensure previous query completes before processing interviews
+        await self.db.flush()
+        
+        # Convert to response models
+        interview_responses = []
+        for interview in interviews:
+            # Count messages for each interview
+            message_count = await self.message_repo.count_by_interview(interview.id_interview)
+            
+            interview_responses.append(
+                InterviewDBResponse(
+                    id_interview=str(interview.id_interview),
+                    employee_id=str(interview.employee_id),
+                    language=interview.language.value,
+                    technical_level=interview.technical_level,
+                    status=interview.status.value,
+                    started_at=interview.started_at,
+                    completed_at=interview.completed_at,
+                    total_messages=message_count
+                )
+            )
+        
+        # Calculate pagination metadata
+        total_pages = (total_count + pagination.page_size - 1) // pagination.page_size
+        pagination_meta = PaginationMeta(
+            total_items=total_count,
+            total_pages=total_pages,
+            current_page=pagination.page,
+            page_size=pagination.page_size
+        )
+        
+        return interview_responses, pagination_meta
+    
+    async def list_interviews_by_employee(
+        self,
+        employee_id: UUID,
+        organization_id: str,
+        filters: InterviewFilters,
+        pagination: PaginationParams
+    ) -> Tuple[List[InterviewDBResponse], PaginationMeta]:
+        """
+        List interviews for a specific employee within an organization
+        
+        This method is used when an admin/manager wants to see interviews
+        for a specific employee in their organization.
+        
+        Args:
+            employee_id: Employee UUID to filter by
+            organization_id: Organization ID (from JWT) for authorization
+            filters: Filter parameters (status, language, dates)
+            pagination: Pagination parameters (page, page_size)
+            
+        Returns:
+            Tuple of (list of InterviewDBResponse, PaginationMeta)
+        """
+        # Get interviews from repository
+        interviews, total_count = await self.interview_repo.get_by_employee_in_organization(
+            employee_id=employee_id,
+            organization_id=organization_id,
+            status=filters.status,
+            language=filters.language,
+            start_date=filters.start_date,
+            end_date=filters.end_date,
+            page=pagination.page,
+            page_size=pagination.page_size
+        )
         
         # Ensure previous query completes before processing interviews
         await self.db.flush()
