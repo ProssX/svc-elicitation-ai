@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Natural Interview Experience - Monitoring Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 16px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .metric-card h3 {
+            color: #333;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .metric-label {
+            color: #999;
+            font-size: 14px;
+        }
+
+        .alert {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert.error {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+        }
+
+        .alert.success {
+            background: #d4edda;
+            border-left-color: #28a745;
+        }
+
+        .alert-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .controls {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-good {
+            background: #28a745;
+        }
+
+        .status-warning {
+            background: #ffc107;
+        }
+
+        .status-error {
+            background: #dc3545;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .chart-container h3 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .last-updated {
+            text-align: center;
+            color: white;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            animation: pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌟 Natural Interview Experience</h1>
+            <p>Real-time monitoring dashboard for process detection and interview completion metrics</p>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-primary" onclick="refreshMetrics()">🔄 Refresh</button>
+            <button class="btn btn-danger" onclick="resetMetrics()">🗑️ Reset Metrics</button>
+            <label>
+                <input type="checkbox" id="autoRefresh" checked onchange="toggleAutoRefresh()">
+                Auto-refresh (10s)
+            </label>
+        </div>
+
+        <div id="alerts"></div>
+
+        <h2 style="color: white; margin-bottom: 15px; font-size: 24px;">📊 Process Detection Metrics</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>Invocation Count</h3>
+                <div class="metric-value" id="detection-invocations">-</div>
+                <div class="metric-label">Total detections</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Success Rate</h3>
+                <div class="metric-value" id="detection-success-rate">-</div>
+                <div class="metric-label">Successful detections</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Timeout Rate</h3>
+                <div class="metric-value" id="detection-timeout-rate">-</div>
+                <div class="metric-label">Detection timeouts</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Error Rate</h3>
+                <div class="metric-value" id="detection-error-rate">-</div>
+                <div class="metric-label">Detection errors</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Latency P50</h3>
+                <div class="metric-value" id="detection-p50">-</div>
+                <div class="metric-label">Median latency (ms)</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Latency P95</h3>
+                <div class="metric-value" id="detection-p95">-</div>
+                <div class="metric-label">95th percentile (ms)</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Latency P99</h3>
+                <div class="metric-value" id="detection-p99">-</div>
+                <div class="metric-label">99th percentile (ms)</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Avg Confidence</h3>
+                <div class="metric-value" id="detection-confidence">-</div>
+                <div class="metric-label">Average confidence score</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Invocation Rate</h3>
+                <div class="metric-value" id="detection-rate">-</div>
+                <div class="metric-label">Detections per minute</div>
+            </div>
+        </div>
+
+        <h2 style="color: white; margin: 30px 0 15px 0; font-size: 24px;">🎯 Interview Completion Metrics</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>Interviews Started</h3>
+                <div class="metric-value" id="completion-started">-</div>
+                <div class="metric-label">Total started</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Interviews Completed</h3>
+                <div class="metric-value" id="completion-completed">-</div>
+                <div class="metric-label">Total completed</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Completion Rate</h3>
+                <div class="metric-value" id="completion-rate">-</div>
+                <div class="metric-label">Completion percentage</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Early Finish Rate</h3>
+                <div class="metric-value" id="completion-early">-</div>
+                <div class="metric-label">Finished before max</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>User Requested</h3>
+                <div class="metric-value" id="completion-user">-</div>
+                <div class="metric-label">User asked to finish</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Agent Signaled</h3>
+                <div class="metric-value" id="completion-agent">-</div>
+                <div class="metric-label">Agent signaled completion</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Safety Limit</h3>
+                <div class="metric-value" id="completion-safety">-</div>
+                <div class="metric-label">Hit safety limit</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Avg Questions</h3>
+                <div class="metric-value" id="completion-avg-questions">-</div>
+                <div class="metric-label">Average question count</div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Completion Rate</h3>
+                <div class="metric-value" id="completion-per-minute">-</div>
+                <div class="metric-label">Completions per minute</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>System Health Status</h3>
+            <div>
+                <span class="status-indicator" id="status-detection"></span>
+                <strong>Process Detection:</strong> <span id="status-detection-text">-</span>
+            </div>
+            <br>
+            <div>
+                <span class="status-indicator" id="status-completion"></span>
+                <strong>Interview Completion:</strong> <span id="status-completion-text">-</span>
+            </div>
+        </div>
+
+        <div class="last-updated">
+            Last updated: <span id="last-updated">Never</span> | Uptime: <span id="uptime">-</span>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+
+        async function refreshMetrics() {
+            try {
+                const response = await fetch('/api/v1/metrics');
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    const data = result.data;
+                    updateDetectionMetrics(data.detection);
+                    updateCompletionMetrics(data.completion);
+                    updateSystemStatus(data.detection, data.completion);
+                    updateUptime(data.uptime_hours);
+                    document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+                    clearAlerts();
+                } else {
+                    showAlert('error', 'Failed to fetch metrics', result.message);
+                }
+            } catch (error) {
+                showAlert('error', 'Connection Error', 'Failed to connect to metrics API');
+                console.error('Error fetching metrics:', error);
+            }
+        }
+
+        function updateDetectionMetrics(detection) {
+            document.getElementById('detection-invocations').textContent = detection.invocation_count.toLocaleString();
+            document.getElementById('detection-success-rate').textContent = (detection.success_rate * 100).toFixed(1) + '%';
+            document.getElementById('detection-timeout-rate').textContent = (detection.timeout_rate * 100).toFixed(1) + '%';
+            document.getElementById('detection-error-rate').textContent = (detection.error_rate * 100).toFixed(1) + '%';
+            document.getElementById('detection-p50').textContent = detection.latency_p50_ms.toFixed(0) + 'ms';
+            document.getElementById('detection-p95').textContent = detection.latency_p95_ms.toFixed(0) + 'ms';
+            document.getElementById('detection-p99').textContent = detection.latency_p99_ms.toFixed(0) + 'ms';
+            document.getElementById('detection-confidence').textContent = detection.avg_confidence_score.toFixed(2);
+            document.getElementById('detection-rate').textContent = detection.invocation_rate_per_minute.toFixed(1);
+
+            // Check for alerts
+            if (detection.timeout_rate > 0.05) {
+                showAlert('error', 'High Timeout Rate', `Detection timeout rate is ${(detection.timeout_rate * 100).toFixed(1)}% (threshold: 5%)`);
+            }
+            if (detection.error_rate > 0.01) {
+                showAlert('error', 'High Error Rate', `Detection error rate is ${(detection.error_rate * 100).toFixed(1)}% (threshold: 1%)`);
+            }
+        }
+
+        function updateCompletionMetrics(completion) {
+            document.getElementById('completion-started').textContent = completion.interviews_started.toLocaleString();
+            document.getElementById('completion-completed').textContent = completion.interviews_completed.toLocaleString();
+            document.getElementById('completion-rate').textContent = (completion.completion_rate * 100).toFixed(1) + '%';
+            document.getElementById('completion-early').textContent = (completion.early_finish_rate * 100).toFixed(1) + '%';
+            document.getElementById('completion-user').textContent = (completion.user_requested_rate * 100).toFixed(1) + '%';
+            document.getElementById('completion-agent').textContent = (completion.agent_signaled_rate * 100).toFixed(1) + '%';
+            document.getElementById('completion-safety').textContent = (completion.safety_limit_rate * 100).toFixed(1) + '%';
+            document.getElementById('completion-avg-questions').textContent = completion.avg_question_count.toFixed(1);
+            document.getElementById('completion-per-minute').textContent = completion.completion_rate_per_minute.toFixed(1);
+        }
+
+        function updateSystemStatus(detection, completion) {
+            // Detection status
+            const detectionIndicator = document.getElementById('status-detection');
+            const detectionText = document.getElementById('status-detection-text');
+            
+            if (detection.timeout_rate > 0.05 || detection.error_rate > 0.01) {
+                detectionIndicator.className = 'status-indicator status-error';
+                detectionText.textContent = 'Degraded - High timeout or error rate';
+            } else if (detection.timeout_rate > 0.02 || detection.error_rate > 0.005) {
+                detectionIndicator.className = 'status-indicator status-warning';
+                detectionText.textContent = 'Warning - Elevated timeout or error rate';
+            } else {
+                detectionIndicator.className = 'status-indicator status-good';
+                detectionText.textContent = 'Healthy';
+            }
+
+            // Completion status
+            const completionIndicator = document.getElementById('status-completion');
+            const completionText = document.getElementById('status-completion-text');
+            
+            if (completion.safety_limit_rate > 0.1) {
+                completionIndicator.className = 'status-indicator status-error';
+                completionText.textContent = 'Degraded - High safety limit rate';
+            } else if (completion.safety_limit_rate > 0.05) {
+                completionIndicator.className = 'status-indicator status-warning';
+                completionText.textContent = 'Warning - Elevated safety limit rate';
+            } else {
+                completionIndicator.className = 'status-indicator status-good';
+                completionText.textContent = 'Healthy';
+            }
+        }
+
+        function updateUptime(hours) {
+            const days = Math.floor(hours / 24);
+            const remainingHours = Math.floor(hours % 24);
+            const minutes = Math.floor((hours * 60) % 60);
+            
+            let uptimeText = '';
+            if (days > 0) uptimeText += `${days}d `;
+            if (remainingHours > 0) uptimeText += `${remainingHours}h `;
+            uptimeText += `${minutes}m`;
+            
+            document.getElementById('uptime').textContent = uptimeText;
+        }
+
+        function showAlert(type, title, message) {
+            const alertsContainer = document.getElementById('alerts');
+            const alert = document.createElement('div');
+            alert.className = `alert ${type}`;
+            alert.innerHTML = `
+                <div class="alert-title">${title}</div>
+                <div>${message}</div>
+            `;
+            alert.style.display = 'block';
+            alertsContainer.appendChild(alert);
+        }
+
+        function clearAlerts() {
+            document.getElementById('alerts').innerHTML = '';
+        }
+
+        async function resetMetrics() {
+            if (!confirm('Are you sure you want to reset all metrics? This cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/v1/metrics/reset', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert('success', 'Metrics Reset', 'All metrics have been reset successfully');
+                    refreshMetrics();
+                } else {
+                    showAlert('error', 'Reset Failed', result.message);
+                }
+            } catch (error) {
+                showAlert('error', 'Connection Error', 'Failed to reset metrics');
+                console.error('Error resetting metrics:', error);
+            }
+        }
+
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(refreshMetrics, 10000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+
+        // Initial load
+        refreshMetrics();
+        toggleAutoRefresh();
+    </script>
+</body>
+</html>

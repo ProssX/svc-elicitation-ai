@@ -2,56 +2,57 @@
 Context Service
 Manages user context and integration with backend
 """
-import json
 import httpx
 from typing import Optional, Dict
-from pathlib import Path
 from app.config import settings
 
 
 class ContextService:
-    """Service to get user context from backend or mock data"""
+    """Service to get user context from backend"""
     
     def __init__(self):
         """Initialize the context service"""
         self.backend_url = settings.backend_php_url
-        self.mock_data_path = Path(__file__).parent.parent.parent / "data" / "mock_users.json"
-        
-        # Load mock data
-        with open(self.mock_data_path, "r", encoding="utf-8") as f:
-            self.mock_data = json.load(f)
     
-    async def get_user_context(self, user_id: Optional[str] = None) -> Dict:
+    async def get_user_context(self, user_id: str) -> Dict:
         """
-        Get user context information
+        Get user context information from backend service
         
         Args:
-            user_id: User ID (optional, uses mock if not provided)
+            user_id: User ID from JWT token
             
         Returns:
-            dict: User context information
+            dict: User context information with name, role, organization, technical_level
         """
-        # For MVP, use mock data
-        # In production, this would call the backend PHP service
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.backend_url}/users/{user_id}",
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    user_data = response.json()
+                    # Return user data in expected format
+                    return {
+                        "id": user_data.get("id", user_id),
+                        "name": user_data.get("name", "Usuario"),
+                        "email": user_data.get("email", ""),
+                        "role": user_data.get("role", "Empleado"),
+                        "organization": user_data.get("organization", "Organización"),
+                        "organization_id": user_data.get("organization_id", ""),
+                        "technical_level": user_data.get("technical_level", "unknown")
+                    }
+        except Exception as e:
+            print(f"Error fetching user context: {e}")
         
-        if not user_id:
-            # Return default user
-            user_id = "user-123"
-        
-        # Try to get from mock data
-        user_data = self.mock_data.get("users", {}).get(user_id)
-        
-        if user_data:
-            return user_data
-        
-        # If user not found in mock, return default
-        return self.mock_data.get("users", {}).get("user-123", {
+        # Fallback to minimal context if backend unavailable
+        return {
             "id": user_id,
-            "name": "Usuario Desconocido",
-            "role": "Usuario",
+            "name": "Usuario",
+            "role": "Empleado",
             "organization": "Organización",
             "technical_level": "unknown"
-        })
+        }
     
     async def get_organization_info(self, organization_id: str) -> Optional[Dict]:
         """

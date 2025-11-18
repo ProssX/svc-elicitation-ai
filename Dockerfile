@@ -14,7 +14,7 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    gcc curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY prompts/ ./prompts/
 COPY data/ ./data/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./alembic.ini
+COPY pytest.ini ./pytest.ini
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
@@ -34,14 +37,15 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
-# Expose port
-EXPOSE 8001
+# Expose port (default 8002, can be overridden by APP_PORT env var)
+EXPOSE 8002
 
-# Health check
+# Health check (uses APP_PORT env var, defaults to 8002)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8001/api/v1/health')"
+    CMD python -c "import os, requests; port = os.getenv('APP_PORT', '8002'); requests.get(f'http://localhost:{port}/api/v1/health')"
 
 # Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Port is configured via APP_PORT environment variable (default: 8002)
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8002}"]
 
 

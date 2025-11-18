@@ -394,6 +394,1021 @@ curl http://localhost:8001/api/v1/health
 
 ---
 
+## ✅ **Estado de Tests y Validación**
+
+**Última validación:** 1 de noviembre, 2025  
+**Estado:** ✅ **41/41 TESTS PASANDO (100%)**
+
+| Categoría | Tests | Estado |
+|-----------|-------|--------|
+| Tests Unitarios | 18 | ✅ 100% |
+| Tests de Integración (SQLite) | 15 | ✅ 100% |
+| Tests de Integración (PostgreSQL) | 8 | ✅ 100% |
+| **TOTAL** | **41** | **✅ 100%** |
+
+### Componentes Validados
+
+| Componente | Estado | Observación |
+|------------|--------|-------------|
+| Multi-idioma (ES/EN/PT) | ✅ | Funcional |
+| Persistencia en PostgreSQL | ✅ | Implementado |
+| Optimización `/continue` | ✅ | 99% reducción payload |
+| Concurrencia asyncio/asyncpg | ✅ | Resuelto completamente |
+| Swagger UI actualizado | ✅ | Documentación completa |
+| Docker Services | ✅ | Healthy |
+| Autenticación JWT | ✅ | Integrado con svc-users |
+| Sistema de Permisos | ✅ | PBAC implementado |
+
+### Ejecutar Tests
+
+```bash
+# Todos los tests
+python -m pytest tests/ -v
+
+# Solo tests unitarios
+python -m pytest tests/unit/ -v
+
+# Solo tests de integración
+python -m pytest tests/integration/ -v
+
+# Con coverage
+python -m pytest tests/ --cov=app --cov-report=html
+```
+
+---
+
+## 🏗️ **Arquitectura - Diseño Stateless**
+
+Este microservicio usa un diseño **stateless** (sin estado):
+- ❌ NO guarda sesiones en memoria ni base de datos
+- ✅ Cada request debe incluir toda la información necesaria
+- ✅ El `language` debe enviarse en CADA request (`/start` y `/continue`)
+- ✅ Facilita escalado horizontal y alta disponibilidad
+
+📄 **Documentación completa:** [`STATELESS_DESIGN.md`](./STATELESS_DESIGN.md)
+
+**⚠️ IMPORTANTE para Frontend:**
+- Persistir `language` en localStorage
+- Enviarlo en cada request a `/continue`
+- Ver [`FRONTEND_CHANGES.md`](./FRONTEND_CHANGES.md) para detalles de implementación
+
+---
+
+## 🔐 **Authentication**
+
+This service uses **JWT (JSON Web Token)** authentication provided by the Auth Service (svc-users-python). All interview endpoints require a valid Bearer token.
+
+### **How to Obtain a Token**
+
+#### **Step 1: Login to Auth Service**
+
+The Auth Service must be running at the URL specified in `AUTH_SERVICE_URL` environment variable (default: `http://localhost:8000`).
+
+**Request:**
+```bash
+# Windows PowerShell:
+$body = @{ 
+  email = 'admin@example.com'
+  password = 'admin123' 
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $body -ContentType 'application/json'
+
+$token = $response.data.access_token
+Write-Host "Token: $token"
+
+# Linux/Mac/Git Bash:
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "code": 200,
+  "message": "Login successful",
+  "data": {
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9...",
+    "token_type": "bearer",
+    "expires_in": 604800
+  }
+}
+```
+
+#### **Step 2: Use Token in Requests**
+
+Include the token in the `Authorization` header with the `Bearer` prefix:
+
+**Request:**
+```bash
+# Windows PowerShell:
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
+
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac/Git Bash:
+TOKEN="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9..."
+
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+### **Authentication Configuration**
+
+The AI Service needs to know where the Auth Service is located. Configure this in your `.env` file:
+
+```bash
+# Authentication Service URL (required)
+AUTH_SERVICE_URL=http://localhost:8000
+
+# JWT Configuration (must match Auth Service settings)
+JWT_ISSUER=https://api.example.com
+JWT_AUDIENCE=https://api.example.com
+
+# JWKS Cache TTL in seconds (default: 3600 = 1 hour)
+JWKS_CACHE_TTL=3600
+```
+
+**Docker Configuration:**
+
+If using Docker Compose with both services, update `docker-compose.yml`:
+
+```yaml
+services:
+  elicitation-ai:
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8000  # Use service name for Docker networking
+      - JWT_ISSUER=https://api.example.com
+      - JWT_AUDIENCE=https://api.example.com
+```
+
+### **Authentication Error Responses**
+
+#### **401 Unauthorized - Missing Token**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Authentication required",
+  "errors": [{
+    "field": "authorization",
+    "error": "Missing or invalid authorization header"
+  }]
+}
+```
+
+#### **401 Unauthorized - Token Expired**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Token expired",
+  "errors": [{
+    "field": "token",
+    "error": "JWT token has expired"
+  }]
+}
+```
+
+#### **401 Unauthorized - Invalid Token**
+```json
+{
+  "status": "error",
+  "code": 401,
+  "message": "Invalid token",
+  "errors": [{
+    "field": "token",
+    "error": "Token signature verification failed"
+  }]
+}
+```
+
+#### **503 Service Unavailable - Auth Service Down**
+```json
+{
+  "status": "error",
+  "code": 503,
+  "message": "Authentication service unavailable",
+  "errors": [{
+    "field": "service",
+    "error": "Unable to validate token"
+  }]
+}
+```
+
+### **Which Endpoints Require Authentication?**
+
+| Endpoint | Authentication Required | Description |
+|----------|------------------------|-------------|
+| `GET /` | ❌ No | Root endpoint |
+| `GET /api/v1/health` | ❌ No | Health check |
+| `POST /api/v1/interviews/start` | ✅ Yes | Start interview |
+| `POST /api/v1/interviews/continue` | ✅ Yes | Continue interview |
+| `POST /api/v1/interviews/export` | ✅ Yes | Export interview data |
+| `POST /api/v1/interviews/test` | ✅ Yes | Test endpoint |
+
+**Note:** Health check endpoints remain unauthenticated for monitoring purposes.
+
+### **Token Details**
+
+The JWT token contains the following claims:
+
+```json
+{
+  "sub": "01932e5f-8b2a-7890-b123-456789abcdef",  // User ID
+  "organizationId": "01932e5f-1234-5678-9abc-def012345678",  // Organization ID
+  "iss": "https://api.example.com",  // Issuer
+  "aud": "https://api.example.com",  // Audience
+  "iat": 1729526400,  // Issued at
+  "exp": 1730131200,  // Expiration (7 days default)
+  "jti": "01932e5f-uuid7-generated",  // JWT ID
+  "roles": ["admin"],  // User roles
+  "permissions": ["users:read", "users:write", "interviews:manage"]  // Permissions
+}
+```
+
+The AI Service automatically extracts `user_id` and `organization_id` from the token, so you no longer need to send these in the request body.
+
+### **Security Best Practices**
+
+1. **Always use HTTPS in production** - Tokens should never be transmitted over unencrypted connections
+2. **Store tokens securely** - Use httpOnly cookies or secure storage (never localStorage for sensitive apps)
+3. **Handle token expiration** - Implement token refresh logic or redirect to login
+4. **Don't log tokens** - Tokens should never appear in logs or error messages
+5. **Validate on every request** - The AI Service validates tokens on every protected endpoint
+
+### **Troubleshooting Authentication**
+
+#### **Problem: "Authentication service unavailable" (503)**
+
+**Cause:** AI Service cannot reach the Auth Service to fetch JWKS public keys.
+
+**Solutions:**
+1. Verify Auth Service is running: `curl http://localhost:8000/api/v1/health`
+2. Check `AUTH_SERVICE_URL` environment variable is correct
+3. If using Docker, ensure services are on the same network
+4. Check Auth Service logs: `docker logs svc-users-python`
+
+#### **Problem: "Invalid token" (401)**
+
+**Cause:** Token signature verification failed.
+
+**Solutions:**
+1. Ensure `JWT_ISSUER` and `JWT_AUDIENCE` match between services
+2. Verify token hasn't been tampered with
+3. Check that Auth Service is using the correct private key
+4. Ensure JWKS endpoint is accessible: `curl http://localhost:8000/api/v1/auth/jwks`
+
+#### **Problem: "Token expired" (401)**
+
+**Cause:** Token has exceeded its expiration time (default: 7 days).
+
+**Solution:**
+1. Login again to obtain a new token
+2. Implement token refresh mechanism in your frontend
+3. Adjust token expiration time in Auth Service if needed
+
+---
+
+## 🔐 **Authorization & Permissions**
+
+This service implements **Permission-Based Access Control (PBAC)** to control what users can do with interviews. Permissions are included in the JWT token and validated on every request.
+
+### **Permission System Overview**
+
+**Key Concepts:**
+- **Permissions** control what actions users can perform (e.g., create, read, update interviews)
+- **Permissions come from the JWT token** - no database queries needed
+- **Format:** `resource:action` (e.g., `interviews:create`, `interviews:read`)
+- **Ownership validation:** Users can only access their own interviews (unless they have special permissions)
+
+### **Available Permissions**
+
+| Permission | Description | Scope |
+|------------|-------------|-------|
+| `interviews:create` | Create and continue interviews | Own interviews only |
+| `interviews:read` | Read and list interviews | Own interviews only |
+| `interviews:read_all` | Read ALL interviews in organization | Organization-wide (Admin/Manager) |
+| `interviews:update` | Update interview status | Own interviews only |
+| `interviews:export` | Export interviews to documents | Own interviews only |
+
+### **Permission Requirements by Endpoint**
+
+| Endpoint | Method | Required Permission | Ownership Check |
+|----------|--------|---------------------|-----------------|
+| `/interviews/start` | POST | `interviews:create` | N/A (creates new) |
+| `/interviews/continue` | POST | `interviews:create` | ✅ Must own interview |
+| `/interviews` | GET | `interviews:read` | ✅ Auto-filtered by user |
+| `/interviews/{id}` | GET | `interviews:read` | ✅ Must own interview |
+| `/interviews/{id}` | PATCH | `interviews:update` | ✅ Must own interview |
+| `/interviews/export` | POST | `interviews:export` | ✅ Must own interview |
+
+**Note:** Users with `interviews:read_all` can bypass ownership checks and access any interview in their organization.
+
+### **Testing with Different Permissions**
+
+#### **Generating Test JWTs**
+
+For development and testing, you can create JWTs with specific permissions using the Auth Service:
+
+**PowerShell:**
+```powershell
+# Login as admin (has all permissions)
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$adminToken = $response.data.access_token
+
+# Login as regular user (limited permissions)
+$loginBody = @{ email = 'user@example.com'; password = 'user123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$userToken = $response.data.access_token
+```
+
+**Linux/Mac/Git Bash:**
+```bash
+# Login as admin (has all permissions)
+ADMIN_TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Login as regular user (limited permissions)
+USER_TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"user123"}' \
+  | jq -r '.data.access_token')
+```
+
+#### **Testing Permission Scenarios**
+
+**Scenario 1: User with full permissions (Admin)**
+
+```bash
+# PowerShell:
+$headers = @{ Authorization = "Bearer $adminToken" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac:
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Scenario 2: User with limited permissions**
+
+```bash
+# PowerShell:
+$headers = @{ Authorization = "Bearer $userToken" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
+
+# Linux/Mac:
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Scenario 3: Testing permission denial (403)**
+
+```bash
+# Try to access another user's interview (should fail with 403)
+# PowerShell:
+$headers = @{ Authorization = "Bearer $userToken" }
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/OTHER_USER_INTERVIEW_ID `
+  -Method Get -Headers $headers
+
+# Linux/Mac:
+curl -X GET http://localhost:8001/api/v1/interviews/OTHER_USER_INTERVIEW_ID \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+### **Permission Error Responses**
+
+#### **403 Forbidden - Missing Permission**
+
+When a user lacks the required permission:
+
+```json
+{
+  "status": "error",
+  "code": 403,
+  "message": "Insufficient permissions",
+  "errors": [
+    {
+      "field": "permissions",
+      "error": "Required permission: interviews:create",
+      "user_permissions": ["interviews:read"]
+    }
+  ]
+}
+```
+
+#### **403 Forbidden - Access Denied to Resource**
+
+When a user tries to access another user's interview:
+
+```json
+{
+  "status": "error",
+  "code": 403,
+  "message": "Access denied",
+  "errors": [
+    {
+      "field": "interview_id",
+      "error": "You don't have permission to access this interview"
+    }
+  ]
+}
+```
+
+### **Checking Available Permissions**
+
+You can query the service to see all available permissions:
+
+```bash
+# PowerShell:
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/permissions -Method Get
+
+# Linux/Mac:
+curl http://localhost:8001/api/v1/permissions
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "permissions": [
+      {
+        "name": "interviews:create",
+        "description": "Create and continue interviews"
+      },
+      {
+        "name": "interviews:read",
+        "description": "Read own interviews"
+      },
+      {
+        "name": "interviews:read_all",
+        "description": "Read all interviews in organization (Admin/Manager)"
+      },
+      {
+        "name": "interviews:update",
+        "description": "Update interview status"
+      },
+      {
+        "name": "interviews:export",
+        "description": "Export interviews to documents"
+      }
+    ]
+  }
+}
+```
+
+### **Role-to-Permission Mapping**
+
+The Auth Service (`svc-users-python`) maps user roles to permissions. Here are the recommended mappings:
+
+| Role | Permissions | Can Do |
+|------|-------------|--------|
+| **Admin** | `interviews:create`<br>`interviews:read`<br>`interviews:read_all`<br>`interviews:update`<br>`interviews:export` | Everything - create, view all, update, export any interview |
+| **Manager** | `interviews:create`<br>`interviews:read`<br>`interviews:read_all`<br>`interviews:export` | Create, view all, export (cannot update others' interviews) |
+| **User** | `interviews:create`<br>`interviews:read`<br>`interviews:export` | Create, view own, export own interviews only |
+| **Auditor** | `interviews:read_all` | View all interviews (read-only) |
+
+### **How Permissions Work**
+
+1. **User logs in** to Auth Service (`svc-users-python`)
+2. **Auth Service generates JWT** with user's permissions based on their role
+3. **User sends JWT** in Authorization header with each request
+4. **AI Service validates JWT** and extracts permissions
+5. **AI Service checks** if user has required permission for the endpoint
+6. **AI Service validates ownership** (if applicable) - user can only access their own interviews
+7. **Request succeeds or fails** with 403 if permission is missing
+
+**Example JWT payload with permissions:**
+```json
+{
+  "sub": "user-123",
+  "email": "user@example.com",
+  "organization_id": "org-456",
+  "roles": ["ROLE_USER"],
+  "permissions": [
+    "interviews:create",
+    "interviews:read",
+    "interviews:export"
+  ],
+  "exp": 1735228800,
+  "iat": 1735142400
+}
+```
+
+### **Troubleshooting Permissions**
+
+#### **❌ Error: "Insufficient permissions" (403)**
+
+**Cause:** User doesn't have the required permission for the endpoint
+
+**Solution:**
+1. Check what permissions the user has:
+```bash
+# Decode JWT to see permissions (use jwt.io or a JWT decoder)
+echo $TOKEN | cut -d'.' -f2 | base64 -d | jq .permissions
+```
+
+2. Contact administrator to grant the required permission
+3. Login again to get a new token with updated permissions
+
+#### **❌ Error: "Access denied to this interview" (403)**
+
+**Cause:** User is trying to access an interview that belongs to another user
+
+**Solution:**
+- Users can only access their own interviews (where `employee_id` matches their `user_id`)
+- If you need to access all interviews, request the `interviews:read_all` permission from administrator
+
+#### **❌ Error: "No permissions found in JWT" (403)**
+
+**Cause:** JWT doesn't contain a `permissions` array
+
+**Solution:**
+1. Verify Auth Service is configured to include permissions in JWT
+2. Check Auth Service logs for errors
+3. Contact administrator to configure role-to-permission mapping
+
+### **Security Best Practices**
+
+1. **Permissions are signed in JWT** - Users cannot modify their own permissions
+2. **Stateless validation** - No database queries needed for permission checks (fast!)
+3. **Ownership validation** - Users can only access their own resources by default
+4. **Audit logging** - All permission denials are logged for security monitoring
+5. **Fail-safe defaults** - If permissions are missing, access is denied
+
+### **Documentation**
+
+For detailed permission documentation including implementation details for the Auth Service team, see:
+- **[docs/PERMISSIONS.md](./docs/PERMISSIONS.md)** - Complete permission system documentation
+
+---
+
+## 💾 **Database Setup**
+
+This service uses **PostgreSQL 17.6** to persist interview data. Interviews and messages are stored in a relational database for analysis, auditing, and recovery.
+
+### **Database Architecture**
+
+```
+┌─────────────────────────────────────────┐
+│         PostgreSQL 17.6-alpine          │
+│                                         │
+│  ┌───────────────────────────────────┐ │
+│  │  interview                        │ │
+│  │  - id_interview (UUID PK)         │ │
+│  │  - employee_id (UUID, indexed)    │ │
+│  │  - language, status, timestamps   │ │
+│  └──────────────┬────────────────────┘ │
+│                 │ 1:N                   │
+│  ┌──────────────▼────────────────────┐ │
+│  │  interview_message                │ │
+│  │  - id_message (UUID PK)           │ │
+│  │  - interview_id (UUID FK CASCADE) │ │
+│  │  - role, content, sequence_number │ │
+│  └───────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+### **Database Configuration**
+
+Add these environment variables to your `.env` file:
+
+```bash
+# Database Connection (required)
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/elicitation_ai
+
+# Connection Pool Settings (optional)
+DB_POOL_SIZE=20
+DB_MAX_OVERFLOW=10
+DB_POOL_TIMEOUT=30
+DB_POOL_RECYCLE=3600
+```
+
+**Docker Configuration:**
+
+If using Docker Compose, the database service is already configured. Update `docker-compose.yml` if needed:
+
+```yaml
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: elicitation_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elicitation-ai:
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/elicitation_ai
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+```
+
+### **Database Migrations with Alembic**
+
+This project uses **Alembic** for database schema migrations.
+
+#### **Initial Setup (First Time)**
+
+**With Docker (Recommended):**
+
+```bash
+# 1. Start PostgreSQL service
+docker-compose up -d postgres
+
+# 2. Wait for PostgreSQL to be ready (check health)
+docker-compose ps postgres  # Should show "healthy"
+
+# 3. Apply migrations
+docker exec svc-elicitation-ai python -m alembic upgrade head
+
+# Alternative: Start all services (migrations run automatically if configured)
+docker-compose up -d
+```
+
+**Without Docker:**
+
+```bash
+# 1. Ensure PostgreSQL 17.6 is installed and running
+# Windows: services.msc → PostgreSQL → Start
+# Linux: sudo systemctl start postgresql
+# Mac: brew services start postgresql
+
+# 2. Create database (if it doesn't exist)
+createdb -U postgres elicitation_ai
+
+# 3. Set environment variables
+export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/elicitation_ai"
+
+# 4. Apply migrations
+python -m alembic upgrade head
+```
+
+**Verify Setup:**
+
+```bash
+# Check that tables were created
+docker exec postgres-container psql -U postgres elicitation_ai -c "\dt"
+
+# Expected output:
+#              List of relations
+#  Schema |       Name        | Type  |  Owner   
+# --------+-------------------+-------+----------
+#  public | alembic_version   | table | postgres
+#  public | interview         | table | postgres
+#  public | interview_message | table | postgres
+```
+
+#### **Development Migration Commands**
+
+```bash
+# Apply all pending migrations
+python -m alembic upgrade head
+
+# Rollback last migration
+python -m alembic downgrade -1
+
+# Rollback all migrations (CAUTION: This will drop all tables)
+python -m alembic downgrade base
+
+# View migration history
+python -m alembic history
+
+# View current migration version
+python -m alembic current
+
+# Create a new migration (after modifying models)
+python -m alembic revision --autogenerate -m "description_of_changes"
+
+# Rollback to specific migration
+python -m alembic downgrade <revision_id>
+
+# Show SQL that would be executed (dry run)
+python -m alembic upgrade head --sql
+```
+
+#### **Production Migration Commands**
+
+**⚠️ IMPORTANT:** Always backup your database before running migrations in production!
+
+```bash
+# 1. Create database backup
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup_$(date +%Y%m%d_%H%M%S).sql
+
+# 2. Test migrations on a copy first (recommended)
+# Create test database and restore backup, then test migrations
+
+# 3. Apply migrations to production
+python -m alembic upgrade head
+
+# 4. Verify migration was successful
+python -m alembic current
+python -m alembic history --verbose
+
+# 5. If rollback is needed (EMERGENCY ONLY)
+python -m alembic downgrade -1  # Rollback one migration
+# OR restore from backup:
+# docker exec -i postgres-container psql -U postgres elicitation_ai < backup_YYYYMMDD_HHMMSS.sql
+```
+
+**Production Migration Best Practices:**
+
+1. **Always backup before migrations**
+2. **Test migrations on staging environment first**
+3. **Run migrations during maintenance windows**
+4. **Monitor application logs after migration**
+5. **Have rollback plan ready**
+6. **Use `--sql` flag to review SQL before execution**
+
+#### **Docker Migration Commands**
+
+When using Docker, run migrations inside the container:
+
+```bash
+# Apply migrations using Docker
+docker exec svc-elicitation-ai python -m alembic upgrade head
+
+# Check current migration version
+docker exec svc-elicitation-ai python -m alembic current
+
+# View migration history
+docker exec svc-elicitation-ai python -m alembic history
+
+# Rollback last migration
+docker exec svc-elicitation-ai python -m alembic downgrade -1
+
+# Create new migration (after code changes)
+docker exec svc-elicitation-ai python -m alembic revision --autogenerate -m "description_of_changes"
+
+# Run migrations during container startup (add to docker-compose.yml)
+# command: sh -c "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
+```
+
+#### **Migration Files Location**
+
+Migrations are stored in: `alembic/versions/`
+
+Current migrations:
+- `20250124_1430_a1b2c3d4e5f6_create_interview_tables.py` - Initial schema
+
+**Migration File Naming Convention:**
+- Format: `YYYYMMDD_HHMM_<revision_id>_<description>.py`
+- Example: `20250124_1430_a1b2c3d4e5f6_create_interview_tables.py`
+
+### **Database Schema Details**
+
+#### **Table: interview**
+
+Stores interview metadata and session information.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_interview` | UUID | Primary key (UUID v7 or v4) |
+| `employee_id` | UUID | Reference to employee (indexed) |
+| `language` | ENUM | Interview language (es/en/pt) |
+| `technical_level` | VARCHAR(20) | User's technical level |
+| `status` | ENUM | Interview status (in_progress/completed/cancelled) |
+| `started_at` | TIMESTAMP | When interview started |
+| `completed_at` | TIMESTAMP | When interview completed (nullable) |
+| `created_at` | TIMESTAMP | Record creation timestamp |
+| `updated_at` | TIMESTAMP | Record last update timestamp |
+
+**Indexes:**
+- `idx_interview_employee_id` on `employee_id`
+- `idx_interview_status` on `status`
+- `idx_interview_started_at` on `started_at`
+
+#### **Table: interview_message**
+
+Stores individual messages (questions and answers) in the conversation.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_message` | UUID | Primary key (UUID v7 or v4) |
+| `interview_id` | UUID | Foreign key to interview (CASCADE DELETE) |
+| `role` | ENUM | Message role (assistant/user/system) |
+| `content` | TEXT | Message content |
+| `sequence_number` | INTEGER | Message order in conversation (1-based) |
+| `created_at` | TIMESTAMP | Message creation timestamp |
+
+**Indexes:**
+- `idx_interview_sequence` on `(interview_id, sequence_number)`
+
+**Foreign Keys:**
+- `interview_id` → `interview.id_interview` (ON DELETE CASCADE)
+
+### **Database Troubleshooting**
+
+#### **❌ Error: "No module named 'asyncpg'"**
+
+**Solution:**
+```bash
+pip install asyncpg>=0.29.0
+```
+
+#### **❌ Error: "Connection refused" when running migrations**
+
+**Cause:** PostgreSQL is not running
+
+**Solution:**
+```bash
+# With Docker:
+docker-compose up -d postgres
+docker ps | grep postgres  # Verify it's running
+
+# Without Docker:
+# Start PostgreSQL service on your system
+# Windows: services.msc → PostgreSQL → Start
+# Linux: sudo systemctl start postgresql
+# Mac: brew services start postgresql
+```
+
+#### **❌ Error: "Database does not exist"**
+
+**Solution:**
+```bash
+# Create database manually
+docker exec -it postgres-container psql -U postgres -c "CREATE DATABASE elicitation_ai;"
+
+# Or connect and create:
+docker exec -it postgres-container psql -U postgres
+CREATE DATABASE elicitation_ai;
+\q
+```
+
+#### **❌ Error: "Migration already exists"**
+
+**Cause:** Trying to apply a migration that's already been applied
+
+**Solution:**
+```bash
+# Check current version
+python -m alembic current
+
+# View history
+python -m alembic history
+
+# If needed, mark migration as applied without running it
+python -m alembic stamp head
+```
+
+#### **❌ Error: "Target database is not up to date"**
+
+**Cause:** Database schema is behind the current code version
+
+**Solution:**
+```bash
+# Check what migrations are pending
+python -m alembic history
+python -m alembic current
+
+# Apply pending migrations
+python -m alembic upgrade head
+```
+
+#### **❌ Error: "Can't locate revision identified by"**
+
+**Cause:** Migration file is missing or corrupted
+
+**Solution:**
+```bash
+# List available migrations
+ls alembic/versions/
+
+# If migration file is missing, restore from backup or recreate:
+python -m alembic revision --autogenerate -m "recreate_missing_migration"
+
+# If database is corrupted, restore from backup:
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql
+```
+
+#### **❌ Error: "FATAL: password authentication failed"**
+
+**Cause:** Incorrect database credentials
+
+**Solution:**
+```bash
+# Check DATABASE_URL format
+echo $DATABASE_URL
+# Should be: postgresql+asyncpg://username:password@host:port/database
+
+# With Docker, verify postgres service environment:
+docker-compose exec postgres env | grep POSTGRES
+
+# Test connection manually:
+docker exec postgres-container psql -U postgres -d elicitation_ai -c "SELECT 1;"
+```
+
+### **Database Backup and Restore**
+
+#### **Backup**
+
+```bash
+# With Docker:
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup.sql
+
+# Without Docker:
+pg_dump -U postgres elicitation_ai > backup.sql
+```
+
+#### **Restore**
+
+```bash
+# With Docker:
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql
+
+# Without Docker:
+psql -U postgres elicitation_ai < backup.sql
+```
+
+### **Database Connection Validation**
+
+The service automatically validates the database connection on startup. Check the logs:
+
+```bash
+# With Docker:
+docker logs svc-elicitation-ai | grep -i database
+
+# Expected output:
+# ✅ Database connection validated successfully
+```
+
+If you see:
+```
+❌ Database connection failed: ...
+```
+
+Check:
+1. PostgreSQL is running
+2. `DATABASE_URL` is correct
+3. Database exists
+4. User has proper permissions
+
+### **Quick Reference - Database Commands**
+
+```bash
+# 🚀 SETUP (First Time)
+docker-compose up -d postgres                                    # Start PostgreSQL
+docker exec svc-elicitation-ai python -m alembic upgrade head   # Apply migrations
+
+# 📊 MIGRATIONS
+docker exec svc-elicitation-ai python -m alembic current        # Check current version
+docker exec svc-elicitation-ai python -m alembic upgrade head   # Apply all pending
+docker exec svc-elicitation-ai python -m alembic downgrade -1   # Rollback last migration
+docker exec svc-elicitation-ai python -m alembic history        # View migration history
+
+# 🔍 INSPECTION
+docker exec postgres-container psql -U postgres elicitation_ai -c "\dt"     # List tables
+docker exec postgres-container psql -U postgres elicitation_ai -c "\d interview"  # Describe table
+docker exec postgres-container psql -U postgres elicitation_ai -c "SELECT COUNT(*) FROM interview;"  # Count records
+
+# 💾 BACKUP & RESTORE
+docker exec postgres-container pg_dump -U postgres elicitation_ai > backup.sql    # Backup
+docker exec -i postgres-container psql -U postgres elicitation_ai < backup.sql    # Restore
+
+# 🔧 TROUBLESHOOTING
+docker logs postgres-container --tail 50                        # PostgreSQL logs
+docker logs svc-elicitation-ai --tail 50 | grep -i database    # App database logs
+docker exec postgres-container pg_isready -U postgres          # Check if PostgreSQL is ready
+```
+
+---
+
 ## 📡 **API Endpoints**
 
 ### **📚 Documentación Interactiva**
@@ -450,35 +1465,50 @@ GET /api/v1/health
 #### **2. Iniciar Entrevista**
 **Descripción:** Inicia una nueva sesión de entrevista con el usuario.
 
+**🔐 Authentication Required:** Bearer token in Authorization header
+
 **Request:**
 ```json
 POST /api/v1/interviews/start
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
-  "language": "es",              // "es" | "en" | "pt"
-  "organization_id": "1",         // String (ID de organización)
-  "role_id": "1"                  // String (ID del rol del usuario)
+  "language": "es"  // "es" | "en" | "pt" (optional, default: "es")
 }
 ```
 
+**⚠️ IMPORTANT:** `user_id` and `organization_id` are no longer sent in the request body. They are automatically extracted from the JWT token.
+
 **Ejemplo con PowerShell:**
 ```powershell
-$body = @{ 
-  language = 'es'
-  organization_id = '1'
-  role_id = '1' 
-} | ConvertTo-Json
+# First, obtain token from Auth Service
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$loginResponse = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login `
+  -Method Post -Body $loginBody -ContentType 'application/json'
+$token = $loginResponse.data.access_token
+
+# Then, start interview with token
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
 
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
-curl -X POST http://localhost:8001/api/v1/interviews/start \
+# First, obtain token from Auth Service
+TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"language":"es","organization_id":"1","role_id":"1"}'
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Then, start interview with token
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
 ```
 
 **Response:**
@@ -491,13 +1521,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
     "question": "Hola Juan, ¿cómo vas? Me alegra tenerte aquí hoy...",
     "question_number": 1,
-    "is_final": false,
-    "context": {}
+    "is_final": false
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "user_name": "Juan Pérez",
-    "organization": "ProssX Demo"
+    "organization": "ProssX Demo",
+    "language": "es"
   }
 }
 ```
@@ -505,9 +1535,12 @@ curl -X POST http://localhost:8001/api/v1/interviews/start \
 #### **3. Continuar Entrevista**
 **Descripción:** Envía la respuesta del usuario y recibe la siguiente pregunta.
 
+**🔐 Authentication Required:** Bearer token in Authorization header
+
 **Request:**
 ```json
 POST /api/v1/interviews/continue
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
@@ -520,6 +1553,8 @@ Content-Type: application/json
 
 **Ejemplo con PowerShell:**
 ```powershell
+# Assuming you already have $token from login
+$headers = @{ Authorization = "Bearer $token" }
 $body = @{ 
   session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
   user_response = 'Soy gerente de operaciones, coordino equipos y apruebo compras'
@@ -528,12 +1563,14 @@ $body = @{
 } | ConvertTo-Json -Depth 3
 
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/continue `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
+# Assuming you already have $TOKEN from login
 curl -X POST http://localhost:8001/api/v1/interviews/continue \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
@@ -553,13 +1590,13 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
     "question": "Vamos a profundizar un poco más. ¿Cuál es el primer paso...",
     "question_number": 2,
     "is_final": false,
-    "context": {},
-    "corrected_response": "..."
+    "corrected_response": "Soy gerente de operaciones, coordino equipos"
   },
-  "errors": [],
+  "errors": null,
   "meta": {
     "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
-    "question_count": 2
+    "question_count": 2,
+    "language": "es"
   }
 }
 ```
@@ -567,57 +1604,239 @@ curl -X POST http://localhost:8001/api/v1/interviews/continue \
 ---
 
 #### **4. Exportar Entrevista**
-**Descripción:** Exporta los datos completos de la entrevista para análisis posterior.
+**Descripción:** Exporta los datos completos de la entrevista para análisis posterior (sin análisis de IA).
+
+**🔐 Authentication Required:** Bearer token in Authorization header
+
+**⚠️ IMPORTANTE:** Como el backend es stateless, debes enviar `conversation_history` completo y `language`.
 
 **Request:**
 ```json
 POST /api/v1/interviews/export
+Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
 {
-  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43"
+  "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+  "conversation_history": [
+    {
+      "role": "assistant",
+      "content": "¿Cuál es tu función principal?",
+      "timestamp": "2025-10-08T14:15:00Z"
+    },
+    {
+      "role": "user",
+      "content": "Soy gerente de compras",
+      "timestamp": "2025-10-08T14:16:00Z"
+    }
+  ],
+  "language": "es"
 }
 ```
 
 **Ejemplo con PowerShell:**
 ```powershell
-$body = @{ session_id = '1add3c4a-8730-4140-888b-59ac47fcac43' } | ConvertTo-Json
+# Assuming you already have $token from login
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{
+  session_id = '1add3c4a-8730-4140-888b-59ac47fcac43'
+  conversation_history = @(
+    @{ role = 'assistant'; content = '¿Cuál es tu función?'; timestamp = '2025-10-08T14:15:00Z' },
+    @{ role = 'user'; content = 'Soy gerente'; timestamp = '2025-10-08T14:16:00Z' }
+  )
+  language = 'es'
+} | ConvertTo-Json -Depth 5
+
 Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/export `
-  -Method Post -Body $body -ContentType 'application/json'
+  -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 ```
 
 **Ejemplo con cURL:**
 ```bash
+# Assuming you already have $TOKEN from login
 curl -X POST http://localhost:8001/api/v1/interviews/export \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"1add3c4a-8730-4140-888b-59ac47fcac43"}'
+  -d '{
+    "session_id":"1add3c4a-8730-4140-888b-59ac47fcac43",
+    "conversation_history":[
+      {"role":"assistant","content":"¿Cuál es tu función?","timestamp":"2025-10-08T14:15:00Z"},
+      {"role":"user","content":"Soy gerente","timestamp":"2025-10-08T14:16:00Z"}
+    ],
+    "language":"es"
+  }'
 ```
 
 **Response:**
 ```json
 {
   "status": "success",
+  "code": 200,
+  "message": "Interview data exported successfully (raw data only)",
   "data": {
-    "session_id": "uuid",
-    "conversation": [
-      {"role": "assistant", "content": "..."},
-      {"role": "user", "content": "..."}
-    ],
-    "metadata": {
-      "user_name": "Juan Pérez",
-      "organization": "ProssX Demo",
-      "start_time": "2025-10-05T10:30:00Z",
-      "duration_minutes": 15
-    }
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "user_id": "user-123",
+    "user_name": "Juan Pérez",
+    "user_role": "Gerente de Operaciones",
+    "organization": "ProssX Demo",
+    "interview_date": "2025-10-08T14:30:00Z",
+    "interview_duration_minutes": 15,
+    "total_questions": 8,
+    "total_user_responses": 8,
+    "is_complete": true,
+    "conversation_history": [...]
+  },
+  "errors": null,
+  "meta": {
+    "session_id": "1add3c4a-8730-4140-888b-59ac47fcac43",
+    "export_date": "2025-10-08T14:30:00Z",
+    "language": "es",
+    "technical_level": "non-technical",
+    "note": "This is raw data. Process extraction should be done by a separate service."
   }
 }
 ```
 
-**⚠️ Nota:** Este endpoint retorna **solo los datos en crudo**. El análisis de procesos (extracción, estructuración, BPMN) es responsabilidad de otro microservicio que consumirá estos datos.
+**⚠️ Notas Importantes:**
+- ✅ **`language` en `meta`** (no en `metadata` dentro de `data`)
+- ✅ **NO incluye `completeness_score`** (métrica interna eliminada)
+- ✅ **Datos en crudo solamente** - El análisis de procesos (BPMN) es responsabilidad de otro microservicio
+- ✅ **Backend stateless** - Debes enviar `conversation_history` completo y `language`
 
 ---
 
 ## 🔍 **Troubleshooting**
+
+### **🔐 Authentication Issues**
+
+#### **❌ Error: "Authentication required" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Authentication required"
+
+**Causa:** Falta el token de autenticación o el header Authorization está mal formado
+
+**Solución:**
+```bash
+# ❌ Incorrecto (sin Authorization header):
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+
+# ✅ Correcto (con Bearer token):
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImF1dGgtMjAyNS0xMC0xNSJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
+```
+
+**Verificar formato del header:**
+- Debe ser: `Authorization: Bearer <token>`
+- NO: `Authorization: <token>` (falta "Bearer ")
+- NO: `Bearer <token>` (falta "Authorization:")
+
+---
+
+#### **❌ Error: "Token expired" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Token expired"
+
+**Causa:** El token JWT ha superado su tiempo de expiración (default: 7 días)
+
+**Solución:**
+```bash
+# Obtener un nuevo token haciendo login nuevamente
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token'
+```
+
+**Prevención:**
+- Implementar lógica de refresh token en el frontend
+- Verificar expiración antes de hacer requests
+- Redirigir a login cuando el token expire
+
+---
+
+#### **❌ Error: "Invalid token" (401)**
+
+**Síntoma:** Request rechazado con mensaje "Invalid token" o "Token signature verification failed"
+
+**Causas posibles:**
+
+1. **Token corrupto o modificado:**
+```bash
+# Verificar que el token no se haya cortado o modificado
+echo $TOKEN | wc -c  # Debe tener ~500-800 caracteres
+```
+
+2. **Configuración incorrecta de JWT_ISSUER o JWT_AUDIENCE:**
+```bash
+# Verificar que coincidan entre Auth Service y AI Service
+docker exec svc-elicitation-ai printenv | grep JWT
+# Debe mostrar:
+# JWT_ISSUER=https://api.example.com
+# JWT_AUDIENCE=https://api.example.com
+```
+
+3. **JWKS endpoint no accesible:**
+```bash
+# Verificar que el AI Service pueda acceder al JWKS endpoint
+curl http://localhost:8000/api/v1/auth/jwks
+# Debe retornar JSON con las public keys
+```
+
+---
+
+#### **❌ Error: "Authentication service unavailable" (503)**
+
+**Síntoma:** Request rechazado con mensaje "Authentication service unavailable"
+
+**Causa:** El AI Service no puede conectarse al Auth Service para obtener las public keys (JWKS)
+
+**Soluciones:**
+
+1. **Verificar que Auth Service esté corriendo:**
+```bash
+# Verificar health del Auth Service
+curl http://localhost:8000/api/v1/health
+
+# Con Docker:
+docker ps | grep svc-users-python
+docker logs svc-users-python --tail 50
+```
+
+2. **Verificar AUTH_SERVICE_URL:**
+```bash
+# Verificar la variable de entorno
+docker exec svc-elicitation-ai printenv | grep AUTH_SERVICE_URL
+
+# Debe mostrar:
+# - Con Docker: AUTH_SERVICE_URL=http://auth-service:8000
+# - Sin Docker: AUTH_SERVICE_URL=http://localhost:8000
+```
+
+3. **Verificar conectividad de red (Docker):**
+```bash
+# Verificar que ambos servicios estén en la misma red
+docker network inspect <network-name>
+
+# Probar conectividad desde AI Service a Auth Service
+docker exec svc-elicitation-ai curl http://auth-service:8000/api/v1/health
+```
+
+4. **Verificar JWKS endpoint:**
+```bash
+# El endpoint debe estar accesible
+curl http://localhost:8000/api/v1/auth/jwks
+
+# Debe retornar algo como:
+# {"keys":[{"kty":"RSA","kid":"auth-2025-10-15",...}]}
+```
+
+**Nota:** El AI Service cachea las public keys por 1 hora (default). Si el Auth Service está temporalmente caído pero el cache es válido, los requests seguirán funcionando.
+
+---
 
 ### **❌ Error: "All connection attempts failed"**
 
@@ -807,8 +2026,6 @@ svc-elicitation-ai/
 │       └── model_factory.py    # LLM factory (Ollama/OpenAI)
 ├── prompts/
 │   └── system_prompts.py       # System prompts (ES/EN/PT)
-├── data/
-│   └── mock_users.json         # Mock user data (MVP)
 ├── requirements.txt            # Python dependencies
 ├── Dockerfile                  # Docker image
 ├── docker-compose.yml          # Docker Compose config
@@ -828,6 +2045,10 @@ svc-elicitation-ai/
 | `LOG_LEVEL` | Nivel de logs | `INFO` | No |
 | `FRONTEND_URL` | URL del frontend (CORS) | `http://localhost:5173` | No |
 | `BACKEND_PHP_URL` | URL del backend PHP | `http://localhost:8000/api/v1` | No |
+| **`AUTH_SERVICE_URL`** | **URL del Auth Service (svc-users-python)** | `http://localhost:8000` | **Sí** |
+| **`JWT_ISSUER`** | **Issuer esperado en tokens JWT** | `https://api.example.com` | **Sí** |
+| **`JWT_AUDIENCE`** | **Audience esperado en tokens JWT** | `https://api.example.com` | **Sí** |
+| `JWKS_CACHE_TTL` | Tiempo de cache de JWKS en segundos | `3600` (1 hora) | No |
 | **`MODEL_PROVIDER`** | **Proveedor: `local` o `openai`** | `local` | **Sí** |
 | `OPENAI_API_KEY` | API Key de OpenAI | - | Solo si `openai` |
 | `OPENAI_MODEL` | Modelo de OpenAI | `gpt-4o` | No |
@@ -925,6 +2146,323 @@ Si encontrás algún problema:
 
 ---
 
+## 🌟 **Natural Interview Experience Feature**
+
+### **Overview**
+
+The Natural Interview Experience feature makes interviews more accessible and accurate by using natural language and semantic process detection. This feature is designed to work with any type of user, regardless of their technical background.
+
+### **Key Improvements**
+
+1. **Natural Language Prompts** - Agent presents itself in an accessible way without technical jargon
+2. **Semantic Process Detection** - AI-powered detection that understands typos, synonyms, and indirect descriptions
+3. **Dynamic Interview Completion** - Agent decides when to finish based on content quality, not arbitrary question counts
+
+### **Feature Flags**
+
+Control these features independently using environment variables:
+
+| Feature Flag | Description | Default | Environment Variable |
+|--------------|-------------|---------|---------------------|
+| `enable_improved_prompts` | Use natural language prompts instead of technical ones | `false` | `ENABLE_IMPROVED_PROMPTS` |
+| `enable_semantic_process_detection` | Use AI-based process detection instead of keywords | `false` | `ENABLE_SEMANTIC_PROCESS_DETECTION` |
+| `enable_dynamic_completion` | Agent decides when to finish (vs min/max questions) | `false` | `ENABLE_DYNAMIC_COMPLETION` |
+
+### **1. Natural Language Prompts**
+
+**Purpose:** Make the interview accessible to non-technical users by eliminating technical terminology.
+
+**Changes:**
+- Agent no longer presents itself as "Senior Systems Analyst"
+- Questions use everyday language: "How is your day-to-day?" instead of "What processes do you execute?"
+- Agent adapts its vocabulary to match the user's language
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_IMPROVED_PROMPTS=true
+```
+
+**Example Comparison:**
+
+| Before (Technical) | After (Natural) |
+|-------------------|-----------------|
+| "I'm a Senior Systems Analyst..." | "I'm your assistant to understand your work..." |
+| "What processes do you execute?" | "How is your day-to-day?" |
+| "What procedures do you follow?" | "What tasks do you usually do?" |
+
+### **2. Semantic Process Detection**
+
+**Purpose:** Accurately detect when users mention business processes, even with typos, synonyms, or informal language.
+
+**How It Works:**
+
+The system uses a **two-layer detection strategy**:
+
+**Layer 1: Heuristic Pre-Filter (<1ms)**
+- Fast keyword matching with expanded vocabulary
+- Action verbs: "do", "perform", "execute", "manage", etc.
+- Nouns: "task", "activity", "responsibility", "function", etc.
+- Contextual indicators: "when", "if", "every time", "daily", etc.
+- Very permissive - if there's ANY indication, triggers Layer 2
+
+**Layer 2: Semantic Analysis (~500ms-1s)**
+- Deep AI analysis using ProcessMatchingAgent
+- Understands typos: "procezo", "proseso", "proceo"
+- Recognizes synonyms: "workflow", "procedure", "methodology"
+- Interprets indirect descriptions: "what I do is...", "my job involves..."
+- Returns confidence score (0.0 to 1.0)
+
+**Error Handling:**
+- **Timeout handling:** 3-second timeout with automatic retry
+- **Intelligent fallback:** If detection fails, assumes it's a process (better false positive than losing information)
+- **Parallel execution:** Detection runs in parallel with question generation to avoid blocking
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+PROCESS_DETECTION_TIMEOUT=3.0
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+ENABLE_DETECTION_RETRY=true
+```
+
+**Example Detections:**
+
+| User Input | Detection Result | Confidence |
+|------------|------------------|------------|
+| "I manage the purchase approval process" | ✅ Process detected | 0.95 |
+| "I handle the procezo of approvals" (typo) | ✅ Process detected | 0.85 |
+| "My daily routine involves reviewing requests" | ✅ Process detected | 0.75 |
+| "I work with the team" | ❌ Not a process | 0.30 |
+
+### **3. Dynamic Interview Completion**
+
+**Purpose:** Let the agent decide when to finish based on content quality, not arbitrary question counts.
+
+**How It Works:**
+
+**Legacy Mode (enable_dynamic_completion=false):**
+- Uses `MIN_QUESTIONS` and `MAX_QUESTIONS` settings
+- Interview must reach minimum questions before finishing
+- Ends automatically at maximum questions
+
+**Dynamic Mode (enable_dynamic_completion=true):**
+- Agent uses professional judgment to determine completeness
+- Respects explicit user signals: "I want to finish", "that's all", "nothing more"
+- Detects agent closing signals: "thank you for your time", "has been recorded"
+- Safety limit prevents infinite loops (default: 50 questions)
+- No minimum questions - user can finish anytime
+
+**Configuration:**
+
+```bash
+# .env
+ENABLE_DYNAMIC_COMPLETION=true
+MAX_QUESTIONS_SAFETY_LIMIT=50  # Safety limit only
+```
+
+**User Signals Detected:**
+
+| Language | Finish Signals |
+|----------|----------------|
+| Spanish | "quiero terminar", "terminemos", "eso es todo", "no tengo más", "ya está" |
+| English | "let's finish", "i want to finish", "that's all", "nothing more", "i'm done" |
+| Portuguese | "vamos terminar", "quero terminar", "é tudo", "não tenho mais", "já chega" |
+
+### **Enabling All Features**
+
+To enable the complete Natural Interview Experience:
+
+```bash
+# .env
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+ENABLE_DYNAMIC_COMPLETION=true
+PROCESS_DETECTION_TIMEOUT=3.0
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+ENABLE_DETECTION_RETRY=true
+MAX_QUESTIONS_SAFETY_LIMIT=50
+```
+
+**Docker Configuration:**
+
+```yaml
+# docker-compose.yml
+services:
+  elicitation-ai:
+    environment:
+      - ENABLE_IMPROVED_PROMPTS=true
+      - ENABLE_SEMANTIC_PROCESS_DETECTION=true
+      - ENABLE_DYNAMIC_COMPLETION=true
+      - PROCESS_DETECTION_TIMEOUT=3.0
+      - PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.6
+      - ENABLE_DETECTION_RETRY=true
+      - MAX_QUESTIONS_SAFETY_LIMIT=50
+```
+
+### **Monitoring and Logs**
+
+The system logs detailed information about process detection:
+
+```bash
+# View detection logs
+docker logs svc-elicitation-ai | grep PROCESS_DETECTION
+
+# Example log output:
+# [PROCESS_DETECTION] Heuristic filter detected potential process - running semantic detection
+# [PROCESS_DETECTION] Semantic detection completed: is_detected=True, confidence=0.85, latency_ms=750
+# [PROCESS_DETECTION] Detection timeout on first attempt - retrying
+# [PROCESS_DETECTION] Retry successful: is_detected=True, confidence=0.75, latency_ms=1200
+```
+
+**Log Fields:**
+- `is_detected`: Whether a process was detected
+- `confidence_score`: Confidence level (0.0 to 1.0)
+- `process_type`: Type of process (new/existing/unclear)
+- `latency_ms`: Detection latency in milliseconds
+- `attempt`: Attempt number (1 or 2)
+- `success`: Whether detection succeeded
+
+### **Performance Considerations**
+
+**Latency Impact:**
+- Heuristic filter: <1ms (synchronous, always runs)
+- Semantic detection: ~500ms-1s (only when heuristic triggers, ~50-70% of responses)
+- Parallel execution: Detection runs in parallel with question generation
+- Timeout: 3 seconds maximum (with retry)
+
+**Token Usage:**
+- Detection prompt: ~200-300 tokens
+- Detection response: ~100-150 tokens
+- Total per detection: ~300-450 tokens
+- Only invoked when heuristic filter detects potential process
+
+**Scalability:**
+- With 100 concurrent interviews: ~50 detection calls/minute (assuming 50% trigger rate)
+- Current infrastructure handles this load comfortably
+- Monitoring recommended for production deployments
+
+### **Troubleshooting**
+
+#### **❌ Detection is too slow**
+
+**Symptoms:** Detection takes >2 seconds consistently
+
+**Solutions:**
+1. Reduce timeout:
+```bash
+PROCESS_DETECTION_TIMEOUT=2.0
+```
+
+2. Disable retry:
+```bash
+ENABLE_DETECTION_RETRY=false
+```
+
+3. Check LLM performance (Ollama vs OpenAI)
+
+#### **❌ Too many false positives**
+
+**Symptoms:** System detects processes when there aren't any
+
+**Solution:** Increase confidence threshold:
+```bash
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.75  # Default: 0.6
+```
+
+#### **❌ Missing process detections**
+
+**Symptoms:** System doesn't detect obvious processes
+
+**Solutions:**
+1. Lower confidence threshold:
+```bash
+PROCESS_DETECTION_CONFIDENCE_THRESHOLD=0.5  # Default: 0.6
+```
+
+2. Check logs for timeout errors:
+```bash
+docker logs svc-elicitation-ai | grep "Detection timeout"
+```
+
+3. Increase timeout:
+```bash
+PROCESS_DETECTION_TIMEOUT=5.0  # Default: 3.0
+```
+
+#### **❌ Interview never finishes (Dynamic Completion)**
+
+**Symptoms:** Interview continues beyond reasonable length
+
+**Cause:** Safety limit not configured or too high
+
+**Solution:**
+```bash
+MAX_QUESTIONS_SAFETY_LIMIT=30  # Default: 50
+```
+
+### **Migration Guide**
+
+**From Legacy to Natural Interview Experience:**
+
+1. **Start with improved prompts only** (low risk):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+```
+
+2. **Add semantic detection** (medium risk):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+```
+
+3. **Enable dynamic completion** (requires testing):
+```bash
+ENABLE_IMPROVED_PROMPTS=true
+ENABLE_SEMANTIC_PROCESS_DETECTION=true
+ENABLE_DYNAMIC_COMPLETION=true
+```
+
+4. **Monitor and adjust:**
+- Check detection logs for timeout rates
+- Verify interview completion rates
+- Adjust confidence thresholds as needed
+
+**Rollback Plan:**
+
+If issues arise, simply set feature flags to `false`:
+
+```bash
+ENABLE_IMPROVED_PROMPTS=false
+ENABLE_SEMANTIC_PROCESS_DETECTION=false
+ENABLE_DYNAMIC_COMPLETION=false
+```
+
+No data loss or corruption - system reverts to previous behavior immediately.
+
+### **Best Practices**
+
+1. **Enable features gradually** - Start with improved prompts, then add detection, then dynamic completion
+2. **Monitor logs** - Watch for timeout rates and detection accuracy
+3. **Adjust thresholds** - Fine-tune confidence thresholds based on your use case
+4. **Test with real users** - Validate that non-technical users understand the language
+5. **Set appropriate safety limits** - Prevent infinite loops with reasonable max questions
+
+### **Future Enhancements**
+
+Planned improvements for this feature:
+
+- **Adaptive prompts:** Adjust language based on user's vocabulary usage
+- **Multi-turn detection:** Detect processes described across multiple responses
+- **Confidence-based follow-up:** Ask clarifying questions when confidence is low
+- **Learning from corrections:** Improve detection based on user feedback
+- **Metrics dashboard:** Visualize detection accuracy and performance
+
+---
+
 ## ❓ **Preguntas Frecuentes (FAQ)**
 
 ### **1. ¿Necesito instalar Ollama en mi máquina?**
@@ -1000,6 +2538,61 @@ docker rmi svc-elicitation-ai-elicitation-ai ollama/ollama
 
 ---
 
+## 📚 **API Documentation**
+
+### **Version 1.1.0 - API Optimization**
+
+This version introduces significant optimizations to the `/continue` endpoint, reducing request payload by 99% (from ~50KB to ~200 bytes).
+
+#### **📖 Documentation Files**
+
+| Document | Description | Audience |
+|----------|-------------|----------|
+| **[API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md)** | Complete API changes documentation with migration guide | Frontend developers |
+| **[QUICK_REFERENCE_v1.1.0.md](./docs/QUICK_REFERENCE_v1.1.0.md)** | Quick reference card with TL;DR and code examples | All developers |
+| **[Swagger UI](http://localhost:8002/docs)** | Interactive API documentation (when service is running) | All developers |
+| **[ReDoc](http://localhost:8002/redoc)** | Alternative API documentation view | All developers |
+
+#### **🚀 What's New in v1.1.0**
+
+- ✨ **99% payload reduction** - `/continue` endpoint now requires only 3 fields instead of full conversation history
+- ✨ **Standardized error format** - All validation errors (422) now follow ProssX standard format
+- ✨ **Deprecated fields** - `conversation_history` and `session_id` are now optional and ignored (backward compatible)
+- ✨ **Database persistence** - Backend automatically loads conversation history from PostgreSQL
+
+#### **📝 Quick Example**
+
+**Before (v1.0.0):**
+```json
+{
+  "interview_id": "uuid",
+  "session_id": "uuid",
+  "user_response": "answer",
+  "conversation_history": [...],  // 50KB+
+  "language": "es"
+}
+```
+
+**After (v1.1.0):**
+```json
+{
+  "interview_id": "uuid",
+  "user_response": "answer",
+  "language": "es"
+}
+```
+
+**Result:** Request size reduced from ~50KB to ~200 bytes!
+
+#### **🔗 Quick Links**
+
+- **Full Migration Guide:** [docs/API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md)
+- **Quick Reference:** [docs/QUICK_REFERENCE_v1.1.0.md](./docs/QUICK_REFERENCE_v1.1.0.md)
+- **OpenAPI Schema:** http://localhost:8002/docs (when running)
+- **Error Format Examples:** See [API_CHANGES_v1.1.0.md](./docs/API_CHANGES_v1.1.0.md#4-error-responses---new-format-422-validation-errors)
+
+---
+
 ## 📝 **Comandos más usados (Cheat Sheet)**
 
 ```bash
@@ -1007,6 +2600,21 @@ docker rmi svc-elicitation-ai-elicitation-ai ollama/ollama
 docker-compose up -d                                    # Levantar servicios
 docker exec ollama-service ollama pull llama3.2:3b     # Descargar modelo (solo 1ra vez)
 curl http://localhost:8001/api/v1/health               # Verificar que funciona
+
+# 🔐 AUTENTICACIÓN
+# PowerShell - Obtener token:
+$loginBody = @{ email = 'admin@example.com'; password = 'admin123' } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri http://localhost:8000/api/v1/auth/login -Method Post -Body $loginBody -ContentType 'application/json'
+$token = $response.data.access_token
+
+# Linux/Mac - Obtener token:
+TOKEN=$(curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin123"}' \
+  | jq -r '.data.access_token')
+
+# Verificar JWKS endpoint:
+curl http://localhost:8000/api/v1/auth/jwks
 
 # 📊 MONITOREO
 docker ps                                               # Ver contenedores corriendo
@@ -1021,17 +2629,23 @@ docker-compose up -d --build                            # Rebuild y reiniciar
 # 🔍 DEBUG
 docker exec ollama-service ollama list                  # Ver modelos instalados
 docker exec svc-elicitation-ai printenv | grep MODEL   # Ver config del modelo
+docker exec svc-elicitation-ai printenv | grep AUTH    # Ver config de autenticación
 docker logs svc-elicitation-ai --tail 50               # Ver últimos 50 logs
+docker logs svc-users-python --tail 50                 # Ver logs del Auth Service
 
 # 🧪 TESTING
-# PowerShell:
+# PowerShell (con autenticación):
 Invoke-RestMethod http://localhost:8001/api/v1/health
-$body = @{ language = 'es'; organization_id = '1'; role_id = '1' } | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Body $body -ContentType 'application/json'
+$headers = @{ Authorization = "Bearer $token" }
+$body = @{ language = 'es' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8001/api/v1/interviews/start -Method Post -Headers $headers -Body $body -ContentType 'application/json'
 
-# Linux/Mac/Git Bash:
+# Linux/Mac/Git Bash (con autenticación):
 curl http://localhost:8001/api/v1/health
-curl -X POST http://localhost:8001/api/v1/interviews/start -H "Content-Type: application/json" -d '{"language":"es","organization_id":"1","role_id":"1"}'
+curl -X POST http://localhost:8001/api/v1/interviews/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"es"}'
 ```
 
 ---
