@@ -74,6 +74,15 @@ class Interview(Base):
         comment="Reference to employee.id_employee in svc-organizations-php"
     )
     
+    # Foreign Key to Organization (logical reference, no physical FK)
+    # Organization table is in svc-organizations-php database
+    organization_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="Reference to organization in svc-organizations-php"
+    )
+    
     # Interview Metadata
     language = Column(
         SQLEnum(LanguageEnum, name="language_enum", create_type=False),
